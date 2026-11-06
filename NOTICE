@@ -1,0 +1,26 @@
+gmdss-dsc
+Copyright (C) 2026 the gmdss-dsc contributors
+SPDX-License-Identifier: GPL-3.0-or-later
+
+This Python implementation is distributed under GNU GPL version 3 or, at
+your option, any later version. See LICENSE. It is provided without warranty.
+
+Protocol reference: ITU-R M.493-16, Annex 1 (2023).
+SDRangel's GPL-3.0-or-later DSC code was consulted to cross-check character
+coding, phasing, time diversity and message interpretation. This repository
+is a new Python implementation, not a verbatim translation of that code.
+SDRangel source inspected on 2026-11-06:
+  plugins/channelrx/demoddsc/dscdemodsink.cpp
+    Git blob 7bbd59697032e7c4afef0612fe9cec20873ff4a3
+  sdrbase/util/dsc.cpp
+    Git blob e2342d3aa6b15eea46d9a0e1671eed9a4245a660
+  sdrbase/util/dsc.h
+    Git blob f7029c87a6afb456b908b366652d16543b123003
+See https://github.com/f4exb/sdrangel for its authors and notices.
+
+GMDSS_1 reference message values are from the publicly available Signal
+Identification Wiki recording and PhosphorDSC's published test decode.
+The received recording is not redistributed here. The example WAV is
+synthesized by this repository's source; it contains the same message.
+
+Historical MATLAB, C and correspondence archives were not incorporated.

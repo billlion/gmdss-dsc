@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gmdss-dsc"
+version = "0.1.0"
+description = "Readable MF/HF DSC protocol and offline audio experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0-or-later"}
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+
+[project.urls]
+Repository = "https://github.com/billlion/gmdss-dsc"
+
+[project.scripts]
+dsc = "gmdss_dsc.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
