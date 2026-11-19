@@ -1,4 +1,5 @@
 import contextlib
+import builtins
 import io
 import json
 from pathlib import Path
@@ -177,6 +178,18 @@ class LiveTests(unittest.TestCase):
                     main(["listen"]+options)
                 self.assertEqual(error.exception.code, 2)
                 capture.assert_not_called()
+
+    def test_audio_backend_initialization_error_is_reported(self):
+        original_import = builtins.__import__
+
+        def import_without_audio_server(name, *args, **kwargs):
+            if name == "sounddevice":
+                raise RuntimeError("PulseAudio: cannot connect to server")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_without_audio_server):
+            with self.assertRaisesRegex(AudioInputError, "Cannot initialize.*PulseAudio"):
+                load_sounddevice()
 
     def test_device_and_auto_centre_options(self):
         with patch("gmdss_dsc.live.listen") as listen:

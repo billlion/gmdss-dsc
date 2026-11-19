@@ -80,6 +80,9 @@ Replace `3` with an **input** device ID from the list. `dsc devices` and
 Windows/macOS pip installs include PortAudio. Debian/Ubuntu may first need
 `sudo apt install libportaudio2`. The offline commands do not require audio
 hardware, sounddevice or PortAudio.
+Live capture also needs a working OS audio session; on Linux, an audio
+server connection error can mean that PulseAudio/PipeWire is not running or
+is inaccessible from the current login session.
 
 The default capture rate is 48000 Hz, channel 1 (left/mono). Use
 `--sample-rate 44100` or `--channel 2` if needed. `--centre` is the **audio

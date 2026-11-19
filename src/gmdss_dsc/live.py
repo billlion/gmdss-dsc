@@ -29,6 +29,14 @@ def load_sounddevice():
             'directory run: python -m pip install -e ".[audio]". '
             'On Linux you may also need the libportaudio2 system package.'
         ) from exc
+    except Exception as exc:
+        # PortAudio also initializes during import. Its exception class is
+        # unavailable when that import fails, e.g. with no running audio server.
+        raise AudioInputError(
+            f"Cannot initialize the audio backend: {exc}. "
+            "Check that your operating system's audio service is running "
+            "and this session has permission to record."
+        ) from exc
     return sounddevice
 
 
