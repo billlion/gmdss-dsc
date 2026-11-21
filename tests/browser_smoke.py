@@ -115,10 +115,13 @@ def main():
                 screenshot_dir = os.environ.get("DSC_SCREENSHOT_DIR")
                 if screenshot_dir:
                     phone.get_by_text("Position source", exact=True).click()
+                    expect(phone.get_by_label("Latitude (north positive)", exact=True)).to_be_hidden()
+                    phone.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
                     Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
-                    phone.screenshot(path=str(Path(screenshot_dir) / "phone.png"), full_page=True)
+                    phone.screenshot(path=str(Path(screenshot_dir) / "phone.png"), full_page=True, animations="disabled")
                     phone.set_viewport_size({"width": 1280, "height": 900})
-                    phone.screenshot(path=str(Path(screenshot_dir) / "desktop.png"), full_page=True)
+                    phone.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
+                    phone.screenshot(path=str(Path(screenshot_dir) / "desktop.png"), full_page=True, animations="disabled")
                 assert not errors, errors
                 assert not external, external
                 browser.close()
