@@ -17,7 +17,7 @@ Python 3.10 or later:
 ```sh
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e .
+python -m pip install -e ".[gps]"
 python -m unittest discover -s tests -v
 dsc decode examples/gmdss1_clean.wav --centre 975
 ```
@@ -133,6 +133,127 @@ decoder and exercise overlap, repeated transmissions, gap handling,
 channel selection and JSON output without requiring audio hardware.
 Actual USB-radio capture still needs testing on the user's equipment.
 
+## CW identification, position and soundcard output
+
+Install the optional audio and serial-GPS dependencies on Windows, Linux or macOS:
+
+```sh
+python -m pip install -e ".[audio,gps]"
+dsc devices
+dsc ports
+```
+
+`devices` lists audio inputs **and outputs**; `ports` lists the OS serial-port
+names. A USB GPS which presents NMEA as a serial port uses the same Python
+interface on all three platforms, after any device driver is installed.
+gpsd and Signal K clients need no extra Python dependencies.
+
+Both `encode-test` and the new `encode-position` accept `--callsign` to prepend
+`DE CALLSIGN` in Morse. Add `--locator IO70XX` for an explicit four- or
+six-character Maidenhead locator; on `encode-position`, `--locator auto`
+derives a six-character locator from the same position snapshot as the DSC
+message. `--cw-wpm 18` is the default. Without `--callsign`, there is no CW.
+The CW tone is at `--centre`, followed by a pause and the complete original
+DSC synchronization sequence. The radio can stay in USB throughout.
+
+### Check the position source first
+
+These commands print one JSON position without producing audio:
+
+```sh
+dsc position --latitude 50.2 --longitude -4.5
+dsc position --position-source serial --serial-port COM3 --baud 4800
+dsc position --position-source gpsd --gpsd-host 192.168.1.10
+dsc position --position-source signalk --signalk-url http://192.168.1.10:3000
+```
+
+For serial NMEA, replace `COM3` with the device reported by `dsc ports`:
+
+| Platform | Typical serial-port name |
+|---|---|
+| Windows | `COM3` |
+| Linux | `/dev/ttyUSB0`, `/dev/ttyACM0`, or a stable `/dev/serial/by-id/...` path |
+| macOS | `/dev/cu.usbserial-...` |
+
+The same position options apply to `encode-position`. This first version
+uses explicit command-line configuration, with no OS-specific configuration
+file and no automatic source discovery/fallback. Commands can be saved in
+a local shell script or Windows batch file.
+
+| Source | Behaviour |
+|---|---|
+| `manual` (default) | Requires `--latitude` and `--longitude` in decimal degrees. North/east are positive. The supplied coordinates are treated as current unless `--position-time` supplies an ISO timestamp with timezone. |
+| `serial` | Reads checksummed RMC or GGA sentences at `--baud` (default 4800); rejects invalid fixes. RMC supplies a full UTC date/time. GGA has no date: the nearest UTC date is inferred from the computer clock and reported as `serial:GGA:date-inferred`. |
+| `gpsd` | Connects to `--gpsd-host` (default localhost), `--gpsd-port` (2947). Accepts a complete protocol-v3 TPV report with a 2D/3D fix, coordinates and UTC time. Partial reports are skipped, never combined across fixes or devices. The first usable device report wins. |
+| `signalk` | Reads `vessels/self/navigation/position` through REST at `--signalk-url`. Requires coordinates and the value's own timestamp; rejects stale cached values. The server must supply a trustworthy own-vessel position: this client does not independently query GNSS fix-status paths. |
+
+Each invocation reads **one snapshot**, with `--position-timeout 10` seconds
+and `--max-fix-age 30` seconds by default. Old, missing and implausibly future
+timestamps fail visibly; no cached coordinates are silently substituted.
+Keep the computer clock correct. GGA's missing date means it cannot detect
+a recording replayed exactly a day later; use RMC when possible. The raw fix,
+source, age and locator appear in JSON. A serial port already owned by gpsd
+or Signal K should be accessed through that server instead of opened twice.
+
+For a Signal K server requiring authentication, put a read token in the
+`DSC_SIGNALK_TOKEN` environment variable; it is not printed in JSON. Use the
+server's HTTPS URL where available. Redirects are rejected, including when
+authentication is enabled; supply the final server root URL directly.
+
+### Generate a position message
+
+Replace `YOUR_MMSI`, `PEER_MMSI` and `YOUR_CALL` below with the identities
+agreed for your experiment. Callsigns are not converted into MMSIs.
+
+```sh
+dsc encode-position position.wav --source YOUR_MMSI --destination PEER_MMSI --latitude 50.2 --longitude -4.5 --callsign YOUR_CALL --locator auto
+dsc decode position.wav --centre 1700
+```
+
+`encode-position` produces the **positive safety position-request
+acknowledgement** defined in M.493-16 Table A1-4.7: individual format 120,
+category 108, telecommands 121/126, position, UTC and EOS 122. It is the reply
+format, not a new unsolicited broadcast message type. The command constructs
+the reply for an experiment; it neither waits for a request nor automatically
+responds to received calls. It can also be used to compose a reply to a
+separately received request. Receiver acceptance of standalone replies is
+part of the experiment.
+
+Position is rounded to the nearest whole minute of latitude/longitude;
+UTC uses the fix's hour/minute. No date is carried on air. The JSON separates
+the original `position_fix` from the encoded `position_report`. Decoding
+WAV or live audio now returns `position_report` for these supported replies
+(otherwise null), alongside the existing `test_call` field. No M.821 fine
+position expansion, unknown-position reply, or refused-position reply is
+implemented yet. Generating an ordinary safety test call still uses
+`encode-test`; that message has no position field.
+
+### Play once to an output device
+
+Add `--play --device 3` to either encoder, selecting an **output** device
+from `dsc devices`. A unique name substring such as `--device "USB Audio"`
+also works. With `--play` but no `--device`, the system default output is
+used. The WAV path is optional when playing, and supplying both saves and
+plays the same generated waveform. For example:
+
+```sh
+dsc encode-test test.wav --source YOUR_MMSI --destination PEER_MMSI --callsign YOUR_CALL --play --device 3
+dsc encode-position --source YOUR_MMSI --destination PEER_MMSI --position-source serial --serial-port COM3 --callsign YOUR_CALL --locator auto --play --device 3
+```
+
+`--output-channel 1` selects left/mono; `2` selects right, leaving other
+opened channels silent. Playback resamples to the device's default sample
+rate; `--sample-rate` still controls the WAV synthesis rate. **Ctrl+C** aborts
+playback (exit 130), and an output underflow stops the burst without repeating
+it. Playback status goes to stderr; successful completion emits JSON.
+
+This is soundcard output only: it does **not** set frequency, operate PTT or
+enforce amateur-band limits. Radio configuration and keying remain manual.
+The optional CW prefix identifies the amateur station but is not a licence
+check. These experiments require appropriate amateur operating privileges
+and frequencies. Marine-radio reception and physical audio/GPS devices
+still need testing; software tests use simulated ports and servers.
+
 ## Python functions
 
 ```python
@@ -152,9 +273,11 @@ assert TestCall.from_frame(received.decoded.frame) == call
 
 - `symbols.py`: ten-bit characters, error detection, decimal MMSI packing.
 - `framing.py`: phasing, DX/RX repetition, format repetition, EOS and ECC.
-- `calls.py`: individual safety test calls and their acknowledgements.
+- `calls.py`: individual safety test calls and position acknowledgements.
 - `modem.py`: continuous-phase FSK synthesis and offline tone-correlation decoding.
 - `live.py`: optional soundcard capture, overlapping decode windows and deduplication.
+- `position.py`: position providers, freshness checks and Maidenhead conversion.
+- `transmit.py`: CW identification and optional soundcard playback.
 - `cli.py`: WAV/live input and JSON results.
 
 `Frame.information` contains the format symbol **once**, followed by the
@@ -205,8 +328,9 @@ nonconsecutive phasing acquisition. Received timing is approximate;
 This is a fixed-clock, short-recording baseline: no clock-drift tracking,
 multipath equalisation, soft error correction, uncertainty probabilities,
 raw SDR I/Q input or VHF mode. Live soundcard reception wraps this same
-fixed-clock decoder in overlapping windows. Only individual safety test calls have a semantic
-encoder/parser. Other base-call symbol sequences may pass framing checks,
+fixed-clock decoder in overlapping windows. Individual safety test calls and
+positive safety position acknowledgements have semantic encoders/parsers.
+Other base-call symbol sequences may pass framing checks,
 but their meaning is not interpreted; expansion messages are not handled.
 The `tone_margin` output is a diagnostic score, **not a probability**.
 This experimental software is not a marine safety receiver.
@@ -240,3 +364,4 @@ does not claim to reproduce its weak-signal performance.
   an independent published interpretation of the reference recording.
 - [Signal Identification Wiki: GMDSS DSC](https://www.sigidwiki.com/wiki/GMDSS_Digital_Selective_Calling),
   source of the original received audio.
+
