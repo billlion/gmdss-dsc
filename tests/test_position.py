@@ -161,14 +161,19 @@ class NetworkPositionTests(unittest.TestCase):
 
     def test_signalk_http_path_timestamp_auth_and_stale_cache(self):
         payload = {"value": {"latitude": 50.2, "longitude": -4.5},
-                   "timestamp": datetime.now(UTC).isoformat(), "$source": "gps"}
+                   "timestamp": None, "$source": "gps"}
         requests = []
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 requests.append((self.path, self.headers.get("Authorization")))
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(json.dumps(payload).encode())
+                # Server/proxy initialization on a CI host may be slow. Model
+                # a live fix at response time, not a cached pre-startup fix.
+                value = dict(payload)
+                if value["timestamp"] is None:
+                    value["timestamp"] = datetime.now(UTC).isoformat()
+                self.wfile.write(json.dumps(value).encode())
             def log_message(self, *args): pass
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
