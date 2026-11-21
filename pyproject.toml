@@ -14,6 +14,7 @@ dependencies = ["numpy>=1.24", "scipy>=1.10"]
 [project.optional-dependencies]
 audio = ["sounddevice>=0.5.3"]
 gps = ["pyserial>=3.5", "pynmea2>=1.19"]
+web = ["nicegui>=3.19,<4", "sounddevice>=0.5.3"]
 
 [project.urls]
 Repository = "https://github.com/billlion/gmdss-dsc"

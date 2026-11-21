@@ -8,6 +8,7 @@ from .calls import TestCall, PositionReport
 from .framing import encode_frame
 from .modem import decode_wav, modulate, write_wav
 from .live import AudioInputError
+from .records import result_dict
 from .position import get_fix, maidenhead
 from .transmit import identification, with_identification, play_audio
 
@@ -26,31 +27,6 @@ def centre_argument(value):
         return float(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("Centre must be a frequency in Hz or 'auto'") from exc
-
-
-def result_dict(result):
-    frame = result.decoded.frame
-    record = {
-        "information_symbols": list(frame.information),
-        "eos": frame.eos,
-        "ecc": frame.ecc,
-        "ecc_passed": True,
-        "data_start_s": result.data_start_s,
-        "end_s": result.end_s,
-        "centre_hz": result.centre_hz,
-        "inverted": result.inverted,
-        "recovered_characters": result.decoded.recovered_characters,
-        "tone_margin": result.tone_margin,
-    }
-    try:
-        record["test_call"] = asdict(TestCall.from_frame(frame))
-    except ValueError:
-        record["test_call"] = None
-    try:
-        record["position_report"] = asdict(PositionReport.from_frame(frame))
-    except ValueError:
-        record["position_report"] = None
-    return record
 
 
 def position_arguments(parser):
@@ -159,8 +135,16 @@ def main(argv=None):
                           help="Retained audio window in seconds (default: 30)")
     listener.add_argument("--interval", type=float, default=1.0,
                           help="Seconds between decode attempts (default: 1)")
+    server = commands.add_parser("serve", help="Local browser receiver (optional web extra)")
+    server.add_argument("--host", default="127.0.0.1",
+                        help="Bind address; use 0.0.0.0 for LAN access with a password")
+    server.add_argument("--port", type=int, default=8080)
+    position_arguments(server)
     args = parser.parse_args(argv)
     try:
+        if args.command == "serve":
+            from .web import serve
+            return serve(args)
         if args.command == "ports":
             from .position import serial_ports
             print(json.dumps(serial_ports(), indent=2))

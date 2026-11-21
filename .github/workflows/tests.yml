@@ -21,8 +21,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libportaudio2 pulseaudio
           pulseaudio --start --exit-idle-time=-1
-      - run: python -m pip install ".[audio,gps]"
+      - run: python -m pip install ".[audio,gps,web]"
       - run: python -c "import sounddevice; print(sounddevice.get_portaudio_version())"
       - run: python -m unittest discover -s tests -v
       - run: dsc decode examples/gmdss1_clean.wav --centre 975
+      - run: python tests/browser_smoke.py --http-only
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install ".[web,gps]" playwright
+      - run: python -m playwright install --with-deps chromium
+      - run: python tests/browser_smoke.py
+        env:
+          DSC_SCREENSHOT_DIR: browser-screenshots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-screenshots
+          path: browser-screenshots/
 
