@@ -57,12 +57,14 @@ class AudioBlock:
     overflow: bool = False
 
 
-def capture_blocks(*, device=None, sample_rate=48000, channel=1):
+def capture_blocks(*, device=None, sample_rate=48000, channel=1, stop_event=None):
     """Yield mono blocks; a bounded queue keeps a slow decoder from growing RAM.
 
 channel is one-based. Selecting channel 2 opens a two-channel stream and
 extracts its right channel; channels are never deliberately averaged here.
 """
+    if stop_event is not None and stop_event.is_set():
+        return
     sd = load_sounddevice()
     pending = queue.Queue(maxsize=100)  # roughly ten seconds at 100 ms/block
     sample_index = 0
@@ -87,7 +89,7 @@ extracts its right channel; channels are never deliberately averaged here.
                             samplerate=sample_rate, dtype="float32",
                             blocksize=max(1, round(sample_rate/10)),
                             callback=callback) as stream:
-            while True:
+            while stop_event is None or not stop_event.is_set():
                 try:
                     yield pending.get(timeout=0.25)
                 except queue.Empty:
@@ -187,13 +189,19 @@ messages at distinct times remain distinct receptions.
 
 
 def listen(*, emit, log, device=None, sample_rate=48000, channel=1,
-           centre_hz=1700.0, window_s=30.0, interval_s=1.0):
-    """Capture until Ctrl+C. emit receives a result, segment and decode UTC."""
+           centre_hz=1700.0, window_s=30.0, interval_s=1.0,
+           stop_event=None, on_started=None):
+    """Capture until Ctrl+C or stop_event; emit(result, segment, decode UTC).
+
+    Cancellation closes the input before flushing the final decode interval.
+    on_started runs after the first audio block, in the consuming thread.
+    """
     if not isinstance(channel, int) or channel < 1:
         raise ValueError("Channel must be a positive one-based number")
     decoder = WindowDecoder(sample_rate, centre_hz=centre_hz,
                             window_s=window_s, interval_s=interval_s)
-    blocks = capture_blocks(device=device, sample_rate=sample_rate, channel=channel)
+    blocks = capture_blocks(device=device, sample_rate=sample_rate, channel=channel,
+                            stop_event=stop_event)
     expected_sample = 0
 
     def output(results):
@@ -204,9 +212,13 @@ def listen(*, emit, log, device=None, sample_rate=48000, channel=1,
     try:
         started = False
         for block in blocks:
+            if stop_event is not None and stop_event.is_set():
+                break
             if not started:
                 log(f"Listening at {sample_rate} Hz, channel {channel}; Ctrl+C to stop.")
                 started = True
+                if on_started is not None:
+                    on_started()
             if block.first_sample != expected_sample or block.overflow:
                 output(decoder.flush())
                 decoder.reset()
@@ -218,10 +230,10 @@ def listen(*, emit, log, device=None, sample_rate=48000, channel=1,
                 continue
             output(decoder.feed(block.samples))
     except KeyboardInterrupt:
-        # Close the device before decoding the last partial interval.
-        blocks.close()
-        output(decoder.flush())
-        log("Stopped.")
+        pass
     finally:
         blocks.close()
+    # Do not flush after an unexpected capture/decoder exception.
+    output(decoder.flush())
+    log("Stopped.")
 

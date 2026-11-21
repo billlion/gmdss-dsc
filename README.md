@@ -37,6 +37,102 @@ similar to the received sample. Its tones are 890 and 1060 Hz. It is a new,
 clean synthesis of the same message, not a reproduction of the receiver's
 noise, fading, phase or MP3 compression.
 
+## Local browser interface
+
+NiceGUI includes the web server (FastAPI/Uvicorn) and serves its browser assets
+locally. No separate web server, Android app or Internet connection is needed
+after installation. The Python computer handles audio and decoding; a phone
+or tablet on the same LAN displays messages and controls that shared receiver.
+
+From the project directory, in the same environment used for the CLI:
+
+```sh
+python -m pip install -e ".[web,gps]"
+dsc serve
+```
+
+Open <http://127.0.0.1:8080> on that computer. The optional `web` extra includes
+sounddevice; `gps` is only needed for serial NMEA. Linux may also need the
+`libportaudio2` system package, as for `dsc listen`. Windows and macOS use
+the same Python commands.
+
+For access from the boat's Wi-Fi:
+
+```sh
+dsc serve --host 0.0.0.0 --port 8080
+```
+
+Use the computer's actual LAN address in the browser, for example
+`http://192.168.1.20:8080`. `0.0.0.0` is the listening address, not an
+address to enter on the phone. Binding to the computer's fixed LAN IP instead
+of `0.0.0.0` also works. Allow TCP port 8080 through its firewall on the
+private network; Wi-Fi client isolation must permit devices to communicate.
+
+LAN binding generates a password and prints it once in the server terminal;
+the browser login username is **dsc**. To keep a password across restarts,
+set `DSC_WEB_PASSWORD` in the server environment before launching:
+
+```sh
+# Linux/macOS shell
+export DSC_WEB_PASSWORD='your-chosen-password'
+dsc serve --host 0.0.0.0
+```
+
+```powershell
+# Windows PowerShell
+$env:DSC_WEB_PASSWORD = 'your-chosen-password'
+dsc serve --host 0.0.0.0
+```
+
+The environment password is also enforced for loopback access if set.
+HTTP Basic authentication covers the page, downloads and WebSocket connection.
+This is for a trusted local network: HTTP does not encrypt the password or
+messages. Do not forward the port to the Internet.
+
+The first version provides:
+
+- Input device, sample rate, channel and audio-centre settings, and Start/Stop.
+  Use **List audio devices** for IDs/names on the server computer. Audio never
+  comes from the phone microphone.
+- A shared list of complete ECC-passing messages, full JSON details and JSONL
+  download. Up to 200 messages and 100 activity entries are retained in memory;
+  download the messages before stopping the server to preserve them.
+- One-shot position reads from manual coordinates, serial NMEA, gpsd or
+  Signal K. The **Position source** panel configures them; fix age and stale
+  status keep updating after a read. **Read position** fetches another fix.
+  These are the onboard computer's sources, not the phone's location.
+- Multiple simultaneous browsers. Reception starts only when requested and
+  continues if all browsers close, sleep or disconnect. Reopening the page
+  shows the current receiver and retained history. The computer/server must
+  stay awake; Ctrl+C in its terminal stops the server and receiver.
+
+Position options can also initialise the form at launch, for example:
+
+```sh
+dsc serve --host 0.0.0.0 --position-source signalk --signalk-url http://192.168.1.30:3000
+# Or: --position-source gpsd --gpsd-host 192.168.1.30
+# Or: --position-source serial --serial-port COM3 --baud 4800
+```
+
+For an authenticated Signal K server, set `DSC_SIGNALK_TOKEN` in the server
+environment, as for the position CLI. Settings are held in memory and are not
+saved across server restarts. This first web interface is for reception and
+position checks; the existing encoding/playback commands remain in the CLI.
+
+The UI uses the same decoder and JSON fields as `dsc listen`, adding a message
+`id` and `receiver_session` counter so capture segments from different
+Start/Stop sessions can be distinguished. It does not open a second soundcard
+stream for each browser. A decode already in progress finishes before Stop
+closes the receiver; status shows **Stopping** while it completes.
+
+Developer browser check (uses the checked-in WAV, no soundcard):
+
+```sh
+python -m pip install playwright
+python -m playwright install chromium
+python tests/browser_smoke.py
+```
+
 ## First reference call
 
 | Field | Value |
