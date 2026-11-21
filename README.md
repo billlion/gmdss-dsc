@@ -60,6 +60,79 @@ one complete call, the fields above, and no character recovered from a bad
 copy. See [reference instructions](examples/REFERENCE.md) to repeat that test.
 The original third-party recording is not bundled in this repository.
 
+## Live soundcard input (Windows, Linux and macOS)
+
+The optional [sounddevice](https://python-sounddevice.readthedocs.io/) input accepts **demodulated SSB audio** from a
+radio's audio interface, USB soundcard or suitably routed virtual input.
+It prints one complete JSON object per decoded call, on its own line.
+
+From the extracted/cloned project directory (the one containing
+`pyproject.toml`), using the same Python environment as the WAV decoder:
+
+```sh
+python -m pip install -e ".[audio]"
+python -m gmdss_dsc devices
+python -m gmdss_dsc listen --device 3 --centre 1700
+```
+
+Replace `3` with an **input** device ID from the list. `dsc devices` and
+`dsc listen` are equivalent shorter commands. Stop with **Ctrl+C**.
+Windows/macOS pip installs include PortAudio. Debian/Ubuntu may first need
+`sudo apt install libportaudio2`. The offline commands do not require audio
+hardware, sounddevice or PortAudio.
+Live capture also needs a working OS audio session; on Linux, an audio
+server connection error can mean that PulseAudio/PipeWire is not running or
+is inaccessible from the current login session.
+
+The default capture rate is 48000 Hz, channel 1 (left/mono). Use
+`--sample-rate 44100` or `--channel 2` if needed. `--centre` is the **audio
+centre in Hz**, not the RF frequency: 1700 Hz matches 2187.5 kHz DSC received
+with a USB dial setting of 2185.8 kHz. Use `--centre auto` to estimate it.
+The FUNcube's raw stereo I/Q needs a separate SDR processing stage first.
+
+Standard output contains only newline-delimited JSON during listening;
+startup, gap and stop messages go to standard error. For a log file:
+
+```sh
+python -m gmdss_dsc listen --device 3 --centre 1700 > calls.jsonl
+```
+
+On Windows, use Command Prompt or PowerShell 7.4+ for a UTF-8 redirected
+log; older Windows PowerShell may re-encode native-command output.
+
+The JSON retains the existing WAV decoder fields and adds:
+
+| Field | Meaning |
+|---|---|
+| `capture_segment` | Starts at 0; increases after a capture gap. |
+| `data_start_s`, `end_s` | Sample-based times from the start of this uninterrupted segment. The start is the first format character, after phasing. |
+| `decoded_at_utc` | Computer UTC time when the result was emitted, **not** the transmitter's time or the exact reception time. |
+
+The listener checks every **1 second**, retaining **30 seconds** of audio.
+Calls spanning decode intervals are recovered from overlapping windows.
+Repeated decodes of the same burst are suppressed; a later identical call
+is still logged. Initial decoding does not wait for the whole 30-second
+window to fill. Output follows a complete, valid closing sequence, usually
+within the next interval plus processing/buffering time.
+
+`--window 60` retains a longer history; `--interval 2` reduces processing
+load. The window must exceed the interval. For reliable boundary coverage,
+the window minus the interval should exceed the duration of the complete
+call, including its phasing. This wrapper retains the offline modem's
+fixed-clock limitations; a longer window does not add clock tracking.
+
+Capture uses a bounded queue so slow decoding cannot grow memory without
+limit. On queue loss or a reported hardware overflow, the listener reports
+the gap, discards incomplete audio, and starts a new segment. The suspect
+overflow block is discarded as well. Keep the soundcard level below clipping
+and disable speech noise suppression/enhancements. Select the radio's input
+explicitly rather than relying on the default laptop microphone.
+
+Tests replay synthesized DSC audio in irregular chunks through the real
+decoder and exercise overlap, repeated transmissions, gap handling,
+channel selection and JSON output without requiring audio hardware.
+Actual USB-radio capture still needs testing on the user's equipment.
+
 ## Python functions
 
 ```python
@@ -81,7 +154,8 @@ assert TestCall.from_frame(received.decoded.frame) == call
 - `framing.py`: phasing, DX/RX repetition, format repetition, EOS and ECC.
 - `calls.py`: individual safety test calls and their acknowledgements.
 - `modem.py`: continuous-phase FSK synthesis and offline tone-correlation decoding.
-- `cli.py`: WAV input/output and JSON results.
+- `live.py`: optional soundcard capture, overlapping decode windows and deduplication.
+- `cli.py`: WAV/live input and JSON results.
 
 `Frame.information` contains the format symbol **once**, followed by the
 information symbols. The framing encoder adds its physical repetition;
@@ -130,7 +204,8 @@ nonconsecutive phasing acquisition. Received timing is approximate;
 
 This is a fixed-clock, short-recording baseline: no clock-drift tracking,
 multipath equalisation, soft error correction, uncertainty probabilities,
-live SDR input or VHF mode. Only individual safety test calls have a semantic
+raw SDR I/Q input or VHF mode. Live soundcard reception wraps this same
+fixed-clock decoder in overlapping windows. Only individual safety test calls have a semantic
 encoder/parser. Other base-call symbol sequences may pass framing checks,
 but their meaning is not interpreted; expansion messages are not handled.
 The `tone_margin` output is a diagnostic score, **not a probability**.
