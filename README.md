@@ -203,7 +203,8 @@ authentication is enabled; supply the final server root URL directly.
 ### Generate a position message
 
 Replace `YOUR_MMSI`, `PEER_MMSI` and `YOUR_CALL` below with the identities
-agreed for your experiment. Callsigns are not converted into MMSIs.
+agreed for your experiment. For amateur experiments, see the address
+convention below. Callsigns are not converted into MMSIs.
 
 ```sh
 dsc encode-position position.wav --source YOUR_MMSI --destination PEER_MMSI --latitude 50.2 --longitude -4.5 --callsign YOUR_CALL --locator auto
@@ -227,6 +228,49 @@ WAV or live audio now returns `position_report` for these supported replies
 position expansion, unknown-position reply, or refused-position reply is
 implemented yet. Generating an ordinary safety test call still uses
 `encode-test`; that message has no position field.
+
+### Amateur experimental address convention
+
+For this project's **amateur-band experiments**, participants with an assigned
+seven-digit personal amateur DMR ID can use the nine-digit address formed by
+prepending `89`:
+
+```text
+experimental DSC address = "89" + seven-digit personal DMR ID
+```
+
+For arithmetic illustration only, `1234567` becomes `891234567`; that example
+is not an address assignment. Use your own assigned ID, and use the peer's
+corresponding address as the destination. Distinct seven-digit DMR IDs produce
+distinct addresses, without a hash or a second project registry. Use the
+personal ID, not a repeater ID, talkgroup number or hotspot ID with a suffix;
+do not pad or truncate a different-length ID to fit. See
+[BrandMeister's explanation of personal and hotspot IDs](https://news.brandmeister.network/using-dmr-ids-on-brandmeister/).
+
+The extra `9` is significant. Under
+[ITU-R M.585-10 (April 2026), Annex 2 Section 1](https://www.itu.int/dms_pubrec/itu-r/rec/m/R-REC-M.585-10-202604-I!!PDF-E.pdf),
+handheld VHF DSC identities have the form `8MIDxxxxx`, with digits 2-4
+containing an allocated country MID. The
+[ITU MID allocation table](https://www.itu.int/gladapp/Allocation/MIDs)
+checked on **21 November 2026** lists country MIDs starting with 2 through 7,
+and none starting with 9. Thus an `89.......` address does not match the
+currently allocated handheld format, nor the other assigned maritime identity
+formats. This is the numbering rationale; it does not depend on the absence
+of handheld MF/HF radios.
+
+This is a **project convention for an experimental DSC address**, not an
+ITU allocation or a genuine MMSI. It makes no guarantee against future
+allocations or someone else using an invented number. Keep it on the agreed
+amateur frequencies, retain the CW amateur callsign, and do not substitute it
+for a vessel's assigned maritime identity. Receiver acceptance of an address
+with an unallocated MID is itself something to test.
+
+At present, supply the resulting nine digits to the existing `--source` and
+`--destination` options. Those option names and JSON fields remain compatible
+with ordinary DSC; the software does not look up or verify DMR registration,
+authenticate the caller, or enforce the amateur-only convention. Prefix `89`
+is not globally reserved for this project, so a decoder must not assume that
+every received number with that prefix is necessarily a participating ham.
 
 ### Play once to an output device
 
