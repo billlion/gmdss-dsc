@@ -87,6 +87,8 @@ def main():
                 expect(phone.get_by_text("Receiving", exact=True)).to_be_visible()
                 expect(phone.get_by_text("215322000 → 004634060", exact=True)).to_be_visible()
                 expect(phone.get_by_role("button", name="Start reception", exact=True)).to_be_disabled()
+                assert phone.get_by_text("Received messages", exact=True).bounding_box()["y"] < (
+                    phone.get_by_text("Reception", exact=True).bounding_box()["y"])
                 desktop.close()
                 mobile.close()
                 # All viewers have gone away. The process-owned receiver persists.
@@ -112,6 +114,7 @@ def main():
                 assert phone.evaluate("document.documentElement.scrollWidth <= innerWidth")
                 screenshot_dir = os.environ.get("DSC_SCREENSHOT_DIR")
                 if screenshot_dir:
+                    phone.get_by_text("Position source", exact=True).click()
                     Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
                     phone.screenshot(path=str(Path(screenshot_dir) / "phone.png"), full_page=True)
                     phone.set_viewport_size({"width": 1280, "height": 900})

@@ -34,6 +34,7 @@ def build_page(service, position_defaults):
         @media (max-width: 760px) {
             .dsc-shell { padding: 14px; }
             .dsc-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+            .dsc-grid > :last-child { order: -1; }
             .dsc-card { padding: 16px; }
         }
     """)
@@ -41,7 +42,9 @@ def build_page(service, position_defaults):
         with ui.column().classes("gap-0"):
             ui.label("DSC receiver").classes("text-xl font-semibold")
             ui.label("MF / HF · local station").classes("text-xs opacity-80")
-        ui.label("RECEIVE").classes("text-xs tracking-widest").style("color: #f1ce7c")
+        with ui.row().classes("items-center gap-3"):
+            ui.label("RECEIVE").classes("text-xs tracking-widest").style("color: #f1ce7c")
+            status = ui.badge("Stopped", color="grey")
 
     def notify_error(exc):
         ui.notify(str(exc), type="negative", timeout=8000)
@@ -66,7 +69,6 @@ def build_page(service, position_defaults):
                 with ui.card().classes("dsc-card"):
                     with ui.row().classes("w-full items-center justify-between"):
                         ui.label("Reception").classes("dsc-title")
-                        status = ui.badge("Stopped", color="grey")
                     active_settings = ui.label().classes("dsc-muted")
                     error = ui.label().classes("text-red-800 break-words w-full").props('role="alert"')
                     initial = service.snapshot()["settings"]
