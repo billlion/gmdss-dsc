@@ -25,7 +25,7 @@ def load_sounddevice():
         import sounddevice
     except (ImportError, OSError) as exc:
         raise AudioInputError(
-            'Live audio requires sounddevice and PortAudio. In the project '
+            'Soundcard audio requires sounddevice and PortAudio. In the project '
             'directory run: python -m pip install -e ".[audio]". '
             'On Linux you may also need the libportaudio2 system package.'
         ) from exc
@@ -35,7 +35,7 @@ def load_sounddevice():
         raise AudioInputError(
             f"Cannot initialize the audio backend: {exc}. "
             "Check that your operating system's audio service is running "
-            "and this session has permission to record."
+            "and this session has permission to access audio devices."
         ) from exc
     return sounddevice
 
@@ -224,3 +224,4 @@ def listen(*, emit, log, device=None, sample_rate=48000, channel=1,
         log("Stopped.")
     finally:
         blocks.close()
+
