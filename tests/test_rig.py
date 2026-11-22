@@ -30,11 +30,11 @@ class RigTests(unittest.TestCase):
         self.assertEqual(command[0], marine.executable)
         self.assertEqual(command[command.index("-T") + 1], "127.0.0.1")
         self.assertEqual(command[command.index("-P") + 1], "NONE")
-        self.assertIn("remoteid=11", command)
+        self.assertEqual(command[command.index("-C") + 1], "cache_timeout=0,remoteid=11")
         self.assertNotIn("-c", command)
         amateur = RigSettings(model=3070, device="COM6", civ_address=0x88).command(40124)
         self.assertEqual(amateur[amateur.index("-c") + 1], "136")
-        self.assertNotIn("-C", amateur)
+        self.assertEqual(amateur[amateur.index("-C") + 1], "cache_timeout=0")
 
     def test_fragmented_responses_readback_and_external_daemon_survives(self):
         with fake_server() as server:

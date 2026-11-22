@@ -64,10 +64,12 @@ class RigSettings:
         self.validate()
         command = [self.executable, "-m", str(self.model), "-T", "127.0.0.1",
                    "-t", str(port), "-P", "NONE"]
+        configuration = ["cache_timeout=0"]  # readback must query the backend
         if self.device:
             command += ["-r", self.device, "-s", str(self.baud)]
         if self.remote_id is not None:
-            command += ["-C", f"remoteid={self.remote_id}"]
+            configuration.append(f"remoteid={self.remote_id}")
+        command += ["-C", ",".join(configuration)]
         if self.civ_address is not None:
             command += ["-c", str(self.civ_address)]
         return command

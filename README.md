@@ -149,13 +149,15 @@ adding quote characters in the GUI.
 The default connection mode starts a local helper when **Connect radio** is
 pressed, bound to `127.0.0.1` on an automatically selected port. It keeps the
 serial connection open until **Disconnect radio** or server shutdown. It
-disables Hamlib PTT (`-P NONE`). This implementation sends only frequency/mode
+disables Hamlib PTT (`-P NONE`) and its readback cache (`-C cache_timeout=0`),
+so verification requests new backend readings. This implementation sends only frequency/mode
 queries and USB/frequency settings; it has no transmit action. **Connect radio**
 only reads the current state. **Tune USB** applies the requested tuning.
 
 Alternatively choose **Use an existing rigctld** and enter its host/port.
 Its operator is responsible for its model, serial connection and PTT settings.
-Use its default protocol configuration (without `--vfo`). Disconnect closes
+Use its default protocol configuration (without `--vfo`), and start it with
+`-C cache_timeout=0` so readback is not satisfied from Hamlib's cache. Disconnect closes
 our socket and leaves that external daemon running. Only the app-managed
 helper is terminated. The phone still talks to the web server; it does not
 need direct access to Hamlib or the serial device.
