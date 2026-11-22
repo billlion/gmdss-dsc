@@ -115,9 +115,11 @@ dsc serve --host 0.0.0.0 --position-source signalk --signalk-url http://192.168.
 ```
 
 For an authenticated Signal K server, set `DSC_SIGNALK_TOKEN` in the server
-environment, as for the position CLI. Settings are held in memory and are not
-saved across server restarts. This first web interface is for reception and
-position checks; the existing encoding/playback commands remain in the CLI.
+environment, as for the position CLI. **Save station** stores the audio,
+radio and position-source settings in a named profile for reuse after restart.
+Position fixes and decoded messages themselves remain in memory. The web
+interface is for reception and position checks; the existing encoding/playback
+commands remain in the CLI.
 
 The UI uses the same decoder and JSON fields as `dsc listen`, adding a message
 `id` and `receiver_session` counter so capture segments from different
@@ -132,6 +134,166 @@ python -m pip install playwright
 python -m playwright install chromium
 python tests/browser_smoke.py
 ```
+
+## RX radio control and station profiles
+
+The CLI and browser can control a radio through Hamlib's `rigctld`. Install
+Hamlib separately: it is an executable, not a Python dependency. Debian/Ubuntu:
+`sudo apt install libhamlib-utils`. On Windows use a Hamlib distribution from
+the [Hamlib project](https://github.com/Hamlib/Hamlib); on macOS install Hamlib
+with your package manager. Check `rigctld --version`. If it is not on `PATH`,
+enter the full path to `rigctld` / `rigctld.exe` in the browser or profile.
+An installation path containing spaces is supported; enter the path without
+adding quote characters in the GUI.
+
+The default connection mode starts a local helper when **Connect radio** is
+pressed, bound to `127.0.0.1` on an automatically selected port. It keeps the
+serial connection open until **Disconnect radio** or server shutdown. It
+disables Hamlib PTT (`-P NONE`). This implementation sends only frequency/mode
+queries and USB/frequency settings; it has no transmit action. **Connect radio**
+only reads the current state. **Tune USB** applies the requested tuning.
+
+Alternatively choose **Use an existing rigctld** and enter its host/port.
+Its operator is responsible for its model, serial connection and PTT settings.
+Use its default protocol configuration (without `--vfo`). Disconnect closes
+our socket and leaves that external daemon running. Only the app-managed
+helper is terminated. The phone still talks to the web server; it does not
+need direct access to Hamlib or the serial device.
+
+The **DSC frequency** is the RF centre of the FSK signal, in **kHz**. The radio
+is tuned lower by the audio centre, which is in **Hz**:
+
+```text
+DSC centre 2187.5 kHz − audio centre 1.7 kHz = USB dial 2185.8 kHz
+```
+
+Frequency presets cover the six MF/HF DSC channels; a custom MF/HF frequency
+can be entered, including amateur frequencies. Tuning requires an explicit
+audio centre (`auto` remains available for manually tuned reception).
+The app sets USB with Hamlib's default passband, allows the configured settling
+time, and checks frequency and mode readback. Readback must match USB and be
+within 2 Hz of the requested dial frequency. A failed operation leaves
+reception stopped and displays the error.
+
+When tuning during reception, the old capture stream finishes and closes
+before the radio changes. After successful readback, a new stream and decoder
+start, with a new receiver session. This discards audio queued at the previous
+frequency. Radio operations are shared and serialized across all browsers;
+closing the page leaves the receiver and radio connection running.
+
+Decoded JSON includes a `rig` object when a radio readback is available:
+`dial_hz`, `mode`, `passband_hz`, `confirmed_at_utc`, and (for USB with a known
+audio centre) `frequency_hz` and `centre_hz`. These describe the **last confirmed
+settings**, not continuous telemetry. There is no automatic scanner or polling
+yet. Stop reception before tuning with the radio's knob or another program,
+then use **Read radio** before restarting. Radio model is `null` for an external
+daemon because its backend is not determined by this client's profile.
+
+Some Hamlib backends, including the Icom marine backend in its default state,
+set both RX and TX frequency registers when setting the main frequency. Thus
+RX operation here means **no keying or audio transmission**; it does not promise
+to preserve the radio's stored TX frequency. Physical radios still need testing.
+
+### Saved Home and Tui profiles
+
+Create an example configuration once (refuses to overwrite an existing file):
+
+```sh
+dsc profiles init
+dsc profiles
+dsc rigs
+dsc ports
+```
+
+`dsc rigs` lists the models in the installed Hamlib version. `dsc ports` needs
+the `gps` extra for pyserial, and lists radio as well as GPS serial ports.
+The example file contains `dummy`, `home` (IC-7100), `tui` (M801E using the M802
+backend), and `external`. **Replace the example device names and ports with
+those on your computer.** The `dummy` default controls no hardware.
+
+Default configuration locations:
+
+| Platform | Location |
+|---|---|
+| Linux | `$XDG_CONFIG_HOME/gmdss-dsc/stations.toml`, or `~/.config/gmdss-dsc/stations.toml` |
+| Windows | `%APPDATA%\gmdss-dsc\stations.toml` |
+| macOS | `~/Library/Application Support/gmdss-dsc/stations.toml` |
+
+All profile-aware commands accept `--config PATH`, so a local file is also easy:
+
+```sh
+dsc profiles init --config stations.toml
+dsc serve --config stations.toml --profile home
+```
+
+In the browser, adjust the audio device and **Radio connection**, then use
+**Save station settings** to save as `home`, `tui`, or another name. **Load station**
+requires stopped reception and a disconnected radio. Saving makes that profile
+the default for the next web-server start; it does not retune the radio.
+The GUI never connects or starts audio automatically on launch. Profile fields
+include the actual radio description, Hamlib model, serial port/baud, optional
+address, audio settings, RF frequency/presets, and position source. Signal K
+tokens remain in the environment and are not saved.
+
+### Vic's IC-7100: first test
+
+The IC-7100's one USB cable provides audio and two serial ports. Select its
+**CI-V control port (USB1)**, not its second data/GPS port (USB2). On Windows,
+install Icom's USB driver following its instructions, identify the ports in
+Device Manager, and choose the USB Audio CODEC **input** in `dsc devices`.
+See the [Icom manual](https://icomuk.co.uk/files/icom/PDF/productManual/IC-7100_ENG_Paper_0.pdf)
+and [KV5R's setup notes](https://kv5r.com/ham-radio/2018-projects/7100-computer-interface/).
+
+The `home` example uses:
+
+| Setting | Value |
+|---|---|
+| Hamlib model | `3070` (IC-7100) |
+| Radio serial port | `COM3` placeholder: replace with the actual CI-V port |
+| Baud | `19200`: set the radio's CI-V baud to match |
+| CI-V address | `136` decimal = `0x88`, the radio's default |
+| Marine Remote ID | Unset |
+| Audio input | `USB Audio CODEC`: replace with a unique input name or device ID |
+| Audio centre | `1700` Hz |
+
+Start the GUI with `dsc serve --profile home`, check the settings, connect,
+enter **2187.5** in **DSC frequency (kHz)** and press **Tune USB**. Confirm the
+radio displays **2185.8 kHz USB**, then **Start reception**. Set the radio's
+USB audio output to received **AF**, not IF, and open its squelch. Other CAT
+applications must release the serial port first.
+
+The same profile works in the CLI:
+
+```sh
+dsc rig status --profile home
+dsc rig tune --profile home --frequency-khz 2187.5
+dsc listen --profile home --frequency-khz 2187.5
+```
+
+`rig status` reads without changing frequency/mode. `rig tune` tunes and exits.
+`listen --profile` connects, tunes to the profile frequency (or the override),
+then captures audio until Ctrl+C. Audio flags override saved audio settings;
+JSON stays on stdout, status/errors on stderr. Plain `dsc listen` retains
+manual tuning and does not load or connect the default profile.
+
+The marine `tui` example instead uses model `30002` (M802), 4800 baud and
+`remote_id = 11` **decimal** for the M801E. An M802 normally uses `8`. These are
+marine Remote IDs, separate from amateur CI-V addresses and Hamlib model IDs.
+The M801E/M804 compatibility remains a hardware experiment; select the interface
+mode and cable appropriate to the radio. No M804 compatibility is claimed here.
+
+### Test without a radio
+
+```sh
+dsc rig tune --profile dummy --frequency-khz 2187.5
+```
+
+This starts Hamlib's dummy backend and should report `dial_hz: 2185800` and
+`mode: USB`. It tests the helper lifecycle and protocol; it does not generate
+radio audio. The unit suite tests a real dummy helper when `rigctld` is present,
+and a simulated TCP endpoint tests errors, partial replies and readback failures
+on all platforms. CI installs Hamlib for its Linux jobs. The browser test also
+checks live retuning, frequency metadata, profile save/load and phone layout.
 
 ## First reference call
 

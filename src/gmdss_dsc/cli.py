@@ -11,6 +11,7 @@ from .live import AudioInputError
 from .records import result_dict
 from .position import get_fix, maidenhead
 from .transmit import identification, with_identification, play_audio
+from .rig import RigController, RigError, list_models
 
 
 def device_argument(value):
@@ -29,7 +30,8 @@ def centre_argument(value):
         raise argparse.ArgumentTypeError("Centre must be a frequency in Hz or 'auto'") from exc
 
 
-def position_arguments(parser):
+def position_arguments(parser, *, suppress_defaults=False):
+    before = len(parser._actions)
     parser.add_argument("--position-source", choices=("manual", "serial", "gpsd", "signalk"),
                         default="manual", help="Position provider (default: manual)")
     parser.add_argument("--latitude", type=float, help="Manual decimal degrees, north positive")
@@ -42,6 +44,70 @@ def position_arguments(parser):
     parser.add_argument("--signalk-url", default="http://localhost:3000", help="Signal K server root URL")
     parser.add_argument("--position-timeout", type=float, default=10.0, help="Source timeout in seconds")
     parser.add_argument("--max-fix-age", type=float, default=30.0, help="Maximum position age in seconds")
+    if suppress_defaults:
+        for action in parser._actions[before:]:
+            action.default = argparse.SUPPRESS
+
+
+def profile_arguments(parser):
+    parser.add_argument("--config", type=Path, help="Station TOML path (default: per-user configuration)")
+    parser.add_argument("--profile", help="Saved station profile, e.g. home or tui")
+
+
+def receive(args):
+    from .live import listen
+    from .profiles import ProfileStore
+    from .receiver import ReceiverSettings
+    profile = ProfileStore(args.config).get(args.profile) if args.profile else None
+    values = asdict(profile.audio if profile else ReceiverSettings())
+    for option, key in (("device", "device"), ("sample_rate", "sample_rate"),
+                        ("channel", "channel"), ("centre", "centre_hz")):
+        if hasattr(args, option):
+            values[key] = getattr(args, option)
+    ReceiverSettings(**values).validate()
+    if args.frequency_khz is not None and profile is None:
+        raise ValueError("--frequency-khz requires a station --profile for rig control")
+    rig = RigController()
+    status = None
+    try:
+        if profile:
+            rig.connect(profile.rig)
+            frequency = args.frequency_khz * 1000 if args.frequency_khz is not None else profile.frequency_hz
+            status = rig.tune(frequency, values["centre_hz"])
+            print(f"Radio confirmed: {status['dial_hz']/1000:g} kHz USB; "
+                  f"DSC centre {status['frequency_hz']/1000:g} kHz", file=sys.stderr)
+
+        def emit(result, segment, decoded_at):
+            record = result_dict(result)
+            record.update(capture_segment=segment, decoded_at_utc=decoded_at)
+            if status is not None:
+                record["rig"] = status
+            print(json.dumps(record, allow_nan=False), flush=True)
+
+        listen(emit=emit, log=lambda message: print(message, file=sys.stderr, flush=True),
+               **values, window_s=args.window, interval_s=args.interval)
+    finally:
+        rig.close()
+    return 0
+
+
+def rig_command(args):
+    from .profiles import ProfileStore
+    if not args.profile:
+        raise ValueError("Choose a station with --profile")
+    profile = ProfileStore(args.config).get(args.profile)
+    if args.action == "status" and args.frequency_khz is not None:
+        raise ValueError("--frequency-khz is only used with 'rig tune'")
+    rig = RigController()
+    try:
+        status = rig.connect(profile.rig)
+        if args.action == "tune":
+            frequency = args.frequency_khz * 1000 if args.frequency_khz is not None else profile.frequency_hz
+            status = rig.tune(frequency, profile.audio.centre_hz)
+        print(json.dumps(status, indent=2, allow_nan=False))
+    finally:
+        rig.close()
+    return 0
 
 
 def encoder_arguments(parser):
@@ -117,31 +183,57 @@ def main(argv=None):
     position_arguments(report)
     position = commands.add_parser("position", help="Read one fresh position and print JSON; no audio")
     position_arguments(position)
-    commands.add_parser("ports", help="List serial ports for NMEA GPS input")
+    commands.add_parser("ports", help="List serial ports for GPS or radio control (gps extra)")
     decoder = commands.add_parser("decode", help="Find complete ECC-passing calls in a mono WAV")
     decoder.add_argument("input", type=Path)
     decoder.add_argument("--centre", type=float, default=None, help="Audio centre in Hz; omit to estimate")
     commands.add_parser("devices", help="List soundcard devices and their numeric IDs")
     listener = commands.add_parser("listen", help="Decode soundcard input to one JSON object per line")
-    listener.add_argument("--device", type=device_argument, default=None,
+    listener.add_argument("--device", type=device_argument, default=argparse.SUPPRESS,
                           help="Input device ID or unique name substring; default: system input")
-    listener.add_argument("--sample-rate", type=int, default=48000,
+    listener.add_argument("--sample-rate", type=int, default=argparse.SUPPRESS,
                           help="Soundcard sample rate (default: 48000)")
-    listener.add_argument("--channel", type=int, default=1,
+    listener.add_argument("--channel", type=int, default=argparse.SUPPRESS,
                           help="One-based input channel; 1=left/mono, 2=right (default: 1)")
-    listener.add_argument("--centre", type=centre_argument, default=1700.0,
+    listener.add_argument("--centre", type=centre_argument, default=argparse.SUPPRESS,
                           help="Audio centre in Hz, or 'auto' to estimate (default: 1700)")
     listener.add_argument("--window", type=float, default=30.0,
                           help="Retained audio window in seconds (default: 30)")
     listener.add_argument("--interval", type=float, default=1.0,
                           help="Seconds between decode attempts (default: 1)")
+    profile_arguments(listener)
+    listener.add_argument("--frequency-khz", type=float, help="DSC RF centre in kHz; requires --profile")
+    rigs = commands.add_parser("rigs", help="List models supported by the installed Hamlib")
+    rigs.add_argument("--rigctld", default="rigctld", help="rigctld executable or full path")
+    rig = commands.add_parser("rig", help="Read status or tune USB using a station profile; no audio")
+    rig.add_argument("action", choices=("status", "tune"))
+    profile_arguments(rig)
+    rig.add_argument("--frequency-khz", type=float, help="DSC RF centre in kHz (default: profile)")
+    profiles = commands.add_parser("profiles", help="List saved stations or create an example configuration")
+    profiles.add_argument("action", nargs="?", choices=("list", "init"), default="list")
+    profiles.add_argument("--config", type=Path)
     server = commands.add_parser("serve", help="Local browser receiver (optional web extra)")
     server.add_argument("--host", default="127.0.0.1",
                         help="Bind address; use 0.0.0.0 for LAN access with a password")
     server.add_argument("--port", type=int, default=8080)
-    position_arguments(server)
+    profile_arguments(server)
+    position_arguments(server, suppress_defaults=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == "rigs":
+            print(list_models(args.rigctld), end="")
+            return 0
+        if args.command == "rig":
+            return rig_command(args)
+        if args.command == "profiles":
+            from .profiles import ProfileStore
+            store = ProfileStore(args.config)
+            if args.action == "init":
+                store.initialize()
+            profiles, default = store.read()
+            print(json.dumps(dict(config=str(store.path), default_profile=default,
+                                  profiles={name: p.radio for name, p in profiles.items()}), indent=2))
+            return 0
         if args.command == "serve":
             from .web import serve
             return serve(args)
@@ -157,23 +249,13 @@ def main(argv=None):
             print(list_devices())
             return 0
         if args.command == "listen":
-            from .live import listen
-
-            def emit(result, segment, decoded_at):
-                record = result_dict(result)
-                record.update(capture_segment=segment, decoded_at_utc=decoded_at)
-                print(json.dumps(record, allow_nan=False), flush=True)
-
-            listen(emit=emit, log=lambda message: print(message, file=sys.stderr, flush=True),
-                   device=args.device, sample_rate=args.sample_rate, channel=args.channel,
-                   centre_hz=args.centre, window_s=args.window, interval_s=args.interval)
-            return 0
+            return receive(args)
         if args.command in ("encode-test", "encode-position"):
             return encode(args)
         results = decode_wav(args.input, centre_hz=args.centre)
         print(json.dumps([result_dict(r) for r in results], indent=2))
         return 0 if results else 1
-    except (ValueError, OSError, AudioInputError) as exc:
+    except (ValueError, OSError, AudioInputError, RigError) as exc:
         parser.exit(2, f"dsc: {exc}\n")
     except KeyboardInterrupt:
         parser.exit(130, "dsc: stopped\n")

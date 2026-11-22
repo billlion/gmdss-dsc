@@ -8,15 +8,22 @@ import json
 import os
 import sys
 
-from .cli import centre_argument, device_argument
+from .cli import centre_argument, device_argument, position_arguments
 from .live import AudioInputError, list_devices
 from .receiver import ReceiverService, ReceiverSettings
 from .web_access import AccessGuard, access_password
+from .profiles import ProfileStore
+from .web_rig import RigPanel
 
 
-def build_page(service, position_defaults):
+def build_page(service, position_defaults, store=None, profile_name=None):
     # Imported only by 'serve'; the codec and CLI do not depend on NiceGUI.
     from nicegui import ui
+    station = service.snapshot()["station"]
+    if station:
+        defaults = argparse.ArgumentParser()
+        position_arguments(defaults)
+        position_defaults = vars(defaults.parse_args([])) | station["profile"]["position"]
 
     ui.colors(primary="#153f50", secondary="#be891d", positive="#267663", negative="#aa3944")
     ui.add_css("""
@@ -82,23 +89,46 @@ def build_page(service, position_defaults):
                                       value=str(initial["centre_hz"]) if initial["centre_hz"] is not None else "auto").classes("w-full")
                     ui.label("Usually 1700 Hz for USB tuned 1.7 kHz below the DSC frequency.").classes("dsc-muted")
 
+                    def audio_settings():
+                        if rate.value is None or channel.value is None:
+                            raise ValueError("Enter a sample rate and channel")
+                        if int(rate.value) != rate.value or int(channel.value) != channel.value:
+                            raise ValueError("Sample rate and channel must be integers")
+                        settings = ReceiverSettings(
+                            device=device_argument(device.value.strip()) if device.value.strip() else None,
+                            sample_rate=int(rate.value), channel=int(channel.value),
+                            centre_hz=centre_argument(centre.value.strip()))
+                        settings.validate()
+                        return settings
+
+                    def set_audio(settings):
+                        device.set_value(str(settings.device) if settings.device is not None else "")
+                        rate.set_value(settings.sample_rate)
+                        channel.set_value(settings.channel)
+                        centre.set_value(str(settings.centre_hz) if settings.centre_hz is not None else "auto")
+
                     def start():
                         try:
-                            if rate.value is None or channel.value is None:
-                                raise ValueError("Enter a sample rate and channel")
-                            if int(rate.value) != rate.value or int(channel.value) != channel.value:
-                                raise ValueError("Sample rate and channel must be integers")
-                            service.start(ReceiverSettings(
-                                device=device_argument(device.value.strip()) if device.value.strip() else None,
-                                sample_rate=int(rate.value), channel=int(channel.value),
-                                centre_hz=centre_argument(centre.value.strip())))
+                            service.start(audio_settings())
                         except (ValueError, TypeError, argparse.ArgumentTypeError) as exc:
+                            notify_error(exc)
+                        refresh()
+
+                    def stop():
+                        try:
+                            service.stop()
+                        except ValueError as exc:
                             notify_error(exc)
                         refresh()
 
                     with ui.row().classes("w-full"):
                         start_button = ui.button("Start reception", on_click=start).props("no-caps")
-                        stop_button = ui.button("Stop", on_click=lambda: (service.stop(), refresh())).props("outline no-caps")
+                        stop_button = ui.button("Stop", on_click=stop).props("outline no-caps")
+
+                # Callbacks are evaluated after the position form below exists.
+                rig_panel = RigPanel(service, store or ProfileStore(), profile_name,
+                                     audio_settings, set_audio,
+                                     lambda: position_settings(), lambda values: set_position(values))
 
                 with ui.card().classes("dsc-card"):
                     ui.label("Own position").classes("dsc-title")
@@ -129,19 +159,30 @@ def build_page(service, position_defaults):
                         field("position_timeout", "Read timeout (seconds)", True)
                         field("max_fix_age", "Maximum fix age (seconds)", True)
 
+                    def position_settings():
+                        settings = {k: v.value for k, v in fields.items()}
+                        settings["position_source"] = source.value
+                        if source.value != "manual":
+                            for key in ("latitude", "longitude", "position_time"):
+                                settings[key] = None
+                        settings["position_time"] = settings["position_time"] or None
+                        for key in ("baud", "gpsd_port"):
+                            if settings[key] is None or int(settings[key]) != settings[key]:
+                                raise ValueError("Baud rate and port must be integers")
+                            settings[key] = int(settings[key])
+                        return settings
+
+                    def set_position(values):
+                        defaults = argparse.ArgumentParser()
+                        position_arguments(defaults)
+                        settings = vars(defaults.parse_args([])) | values
+                        source.set_value(settings["position_source"])
+                        for key, widget in fields.items():
+                            widget.set_value(settings[key])
+
                     def read_position():
                         try:
-                            settings = {k: v.value for k, v in fields.items()}
-                            settings["position_source"] = source.value
-                            if source.value != "manual":
-                                for key in ("latitude", "longitude", "position_time"):
-                                    settings[key] = None
-                            settings["position_time"] = settings["position_time"] or None
-                            for key in ("baud", "gpsd_port"):
-                                if settings[key] is None or int(settings[key]) != settings[key]:
-                                    raise ValueError("Baud rate and port must be integers")
-                                settings[key] = int(settings[key])
-                            service.read_position(settings)
+                            service.read_position(position_settings())
                         except (ValueError, TypeError) as exc:
                             notify_error(exc)
                         refresh()
@@ -201,11 +242,14 @@ def build_page(service, position_defaults):
                                  "Starting": "secondary", "Stopping": "secondary"}.get(state, "grey"))
         error.set_text(snapshot["error"])
         running = state in ("Starting", "Receiving", "Stopping")
-        start_button.set_enabled(not running)
-        stop_button.set_enabled(running and state != "Stopping")
+        start_button.set_enabled(not running and not snapshot["rig_busy"])
+        stop_button.set_enabled(running and state != "Stopping" and not snapshot["rig_busy"])
         for widget in (device, rate, channel, centre):
-            widget.set_enabled(not running)
+            widget.set_enabled(not running and not snapshot["rig_busy"])
         current = snapshot["settings"]
+        if running and not snapshot["rig_busy"]:
+            set_audio(ReceiverSettings(**current))
+        rig_panel.refresh(snapshot)
         active_settings.set_text(f"Device: {current['device'] if current['device'] is not None else 'system default'} · "
                                  f"{current['sample_rate']} Hz · channel {current['channel']} · "
                                  f"centre {current['centre_hz'] if current['centre_hz'] is not None else 'auto'}")
@@ -239,13 +283,20 @@ def build_page(service, position_defaults):
     ui.timer(0.5, refresh)
 
 
-def configure_app(service, position_defaults, password):
+def configure_app(service, position_defaults, password, store=None, profile_name=None):
     from nicegui import app, ui
     app.add_middleware(AccessGuard, password=password)
+    if profile_name:
+        profile = store.get(profile_name)
+        saved = profile.to_dict()
+        saved["position"] = {k: v for k, v in position_defaults.items() if k in (
+            "position_source", "latitude", "longitude", "position_time", "serial_port", "baud",
+            "gpsd_host", "gpsd_port", "signalk_url", "position_timeout", "max_fix_age")}
+        service.configure(profile.audio, station=dict(name=profile_name, profile=saved))
 
     @ui.page("/")
     def index():
-        build_page(service, position_defaults)
+        build_page(service, position_defaults, store, profile_name)
 
     async def shutdown():
         await asyncio.to_thread(service.close)
@@ -266,8 +317,18 @@ def serve(args):
         print(f"Password for this run: {password}" if generated else "Password: from DSC_WEB_PASSWORD",
               file=sys.stderr)
     print(f"DSC server listening on {args.host}:{args.port}. Ctrl+C stops the server.", file=sys.stderr)
-    service = ReceiverService()
-    configure_app(service, vars(args), password)
+    store = ProfileStore(args.config)
+    profiles, default = store.read()
+    name = args.profile or default
+    profile = store.get(name) if name else None
+    defaults = argparse.ArgumentParser()
+    position_arguments(defaults)
+    position_defaults = vars(defaults.parse_args([]))
+    if profile:
+        position_defaults.update(profile.position)
+    position_defaults.update({k: v for k, v in vars(args).items() if k in position_defaults})
+    service = ReceiverService(settings=profile.audio if profile else None)
+    configure_app(service, position_defaults, password, store, name)
     ui.run(host=args.host, port=args.port, title="DSC receiver", reload=False, show=False,
            fastapi_docs=False, on_air=False, proxy_headers=False)
     return 0
