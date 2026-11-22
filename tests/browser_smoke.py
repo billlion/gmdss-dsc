@@ -138,9 +138,11 @@ def main():
                 phone.get_by_label("DSC frequency (kHz)", exact=True).fill("2187.5")
                 phone.get_by_role("button", name="Load station", exact=True).click()
                 expect(phone.get_by_label("DSC frequency (kHz)", exact=True)).to_have_value("8414.500")
+                phone.reload()
+                expect(phone.get_by_label("DSC frequency (kHz)", exact=True)).to_have_value("8414.500")
+                expect(phone.get_by_role("combobox", name="Saved station", exact=True)).to_have_value("saved-test")
                 screenshot_dir = os.environ.get("DSC_SCREENSHOT_DIR")
                 if screenshot_dir:
-                    phone.get_by_text("Position source", exact=True).click()
                     expect(phone.get_by_label("Latitude (north positive)", exact=True)).to_be_hidden()
                     phone.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
                     Path(screenshot_dir).mkdir(parents=True, exist_ok=True)

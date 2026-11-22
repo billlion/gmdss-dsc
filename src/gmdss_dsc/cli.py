@@ -74,8 +74,8 @@ def receive(args):
             rig.connect(profile.rig)
             frequency = args.frequency_khz * 1000 if args.frequency_khz is not None else profile.frequency_hz
             status = rig.tune(frequency, values["centre_hz"])
-            print(f"Radio confirmed: {status['dial_hz']/1000:g} kHz USB; "
-                  f"DSC centre {status['frequency_hz']/1000:g} kHz", file=sys.stderr)
+            print(f"Radio confirmed: {status['dial_hz']/1000:.3f} kHz USB; "
+                  f"DSC centre {status['frequency_hz']/1000:.3f} kHz", file=sys.stderr)
 
         def emit(result, segment, decoded_at):
             record = result_dict(result)

@@ -181,7 +181,7 @@ class RigPanel:
         try:
             centre = self.get_audio().centre_hz
             dial = usb_dial(self.frequency.value * 1000, centre)
-            self.dial.set_text(f"USB dial: {dial/1000:g} kHz · audio centre: {centre:g} Hz")
+            self.dial.set_text(f"USB dial: {dial/1000:.3f} kHz · audio centre: {centre:g} Hz")
         except (ValueError, TypeError):
             self.dial.set_text("Enter a DSC frequency and an explicit audio centre to tune.")
 
@@ -189,7 +189,7 @@ class RigPanel:
         connected, busy = snapshot["rig_connected"], snapshot["rig_busy"]
         self.status.set_text("Working…" if busy else "Connected" if connected else "Disconnected")
         state = snapshot["rig"]
-        self.detail.set_text((f"Last readback: {state['dial_hz']/1000:g} kHz {state['mode']}\n"
+        self.detail.set_text((f"Last readback: {state['dial_hz']/1000:.3f} kHz {state['mode']}\n"
                               f"{state['confirmed_at_utc']}") if state else "")
         self.error.set_text(snapshot["rig_error"])
         self.connect_button.set_enabled(not connected and not busy)

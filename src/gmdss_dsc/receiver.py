@@ -154,7 +154,7 @@ class ReceiverService:
                 with self._lock:
                     self._rig_state = state
                 self.log("Radio disconnected" if state is None else
-                         f"Radio {action}: {state['dial_hz']/1000:g} kHz {state['mode']} confirmed")
+                         f"Radio {action}: {state['dial_hz']/1000:.3f} kHz {state['mode']} confirmed")
                 if running and action != "disconnect":
                     self._start(self._settings)
                 return state
