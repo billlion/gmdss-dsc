@@ -112,9 +112,37 @@ def main():
                 phone.get_by_role("button", name="Stop", exact=True).click()
                 expect(phone.get_by_text("Stopped", exact=True)).to_be_visible()
                 assert phone.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                phone.get_by_role("button", name="Connect radio", exact=True).click()
+                expect(phone.get_by_text("Connected", exact=True)).to_be_visible()
+                phone.get_by_role("button", name="Tune USB", exact=True).click()
+                expect(phone.get_by_text("Last readback: 2186.525 kHz USB", exact=False)).to_be_visible()
+                phone.get_by_role("button", name="Start reception", exact=True).click()
+                expect(phone.get_by_text("3 decoded", exact=True)).to_be_visible(timeout=20000)
+                phone.get_by_label("DSC frequency (kHz)", exact=True).fill("8414.5")
+                phone.get_by_role("button", name="Tune USB", exact=True).click()
+                expect(phone.get_by_text("Last readback: 8413.525 kHz USB", exact=False)).to_be_visible()
+                expect(phone.get_by_text("4 decoded", exact=True)).to_be_visible(timeout=20000)
+                with phone.expect_download() as download:
+                    phone.get_by_role("button", name="Download JSONL", exact=True).click()
+                records = [json.loads(line) for line in Path(download.value.path()).read_text().splitlines()]
+                assert records[-2]["rig"]["frequency_hz"] == 2187500
+                assert records[-1]["rig"]["frequency_hz"] == 8414500
+                assert records[-2]["receiver_session"] != records[-1]["receiver_session"]
+                phone.get_by_role("button", name="Disconnect radio", exact=True).click()
+                expect(phone.get_by_text("Disconnected", exact=True)).to_be_visible()
+                expect(phone.get_by_text("Stopped", exact=True)).to_be_visible()
+                phone.get_by_text("Save station settings", exact=True).click()
+                phone.get_by_label("Profile name", exact=True).fill("saved-test")
+                phone.get_by_role("button", name="Save station", exact=True).click()
+                expect(phone.get_by_text("Station saved", exact=True)).to_be_visible()
+                phone.get_by_label("DSC frequency (kHz)", exact=True).fill("2187.5")
+                phone.get_by_role("button", name="Load station", exact=True).click()
+                expect(phone.get_by_label("DSC frequency (kHz)", exact=True)).to_have_value("8414.500")
+                phone.reload()
+                expect(phone.get_by_label("DSC frequency (kHz)", exact=True)).to_have_value("8414.500")
+                expect(phone.get_by_role("combobox", name="Saved station", exact=True)).to_have_value("saved-test")
                 screenshot_dir = os.environ.get("DSC_SCREENSHOT_DIR")
                 if screenshot_dir:
-                    phone.get_by_text("Position source", exact=True).click()
                     expect(phone.get_by_label("Latitude (north positive)", exact=True)).to_be_hidden()
                     phone.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
                     Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
@@ -125,7 +153,7 @@ def main():
                 assert not errors, errors
                 assert not external, external
                 browser.close()
-            print("Browser smoke passed: authentication, decode, JSON, shared state, reconnect, position, phone layout, offline assets.")
+            print("Browser smoke passed: authentication, decode, JSON, shared state, reconnect, position, rig tune/readback, retune while receiving, profiles, phone layout, offline assets.")
         except Exception:
             log.seek(0)
             print(log.read())

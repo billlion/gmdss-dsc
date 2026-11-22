@@ -12,6 +12,8 @@ from gmdss_dsc.live import AudioBlock, AudioInputError, capture_blocks, listen
 from gmdss_dsc.modem import demodulate, read_wav
 from gmdss_dsc.position import PositionFix
 from gmdss_dsc.receiver import ReceiverService, ReceiverSettings
+from gmdss_dsc.rig import RigError, RigSettings
+from fake_rigctld import fake_server
 
 
 class ReceiverTests(unittest.TestCase):
@@ -158,3 +160,64 @@ class ReceiverTests(unittest.TestCase):
         finally:
             release.set()
             service._position_thread.join(2)
+
+    def test_tuning_flushes_old_frequency_then_restarts_with_new_metadata(self):
+        entries = [Event(), Event()]
+        runs = []
+        def listener(*, emit, on_started, stop_event, centre_hz, **kwargs):
+            index = len(runs)
+            runs.append(centre_hz)
+            on_started()
+            emit(self.result, 0, "2026-11-22T12:00:00+00:00")
+            entries[index].set()
+            stop_event.wait(3)
+            emit(self.result, 0, "2026-11-22T12:00:01+00:00")
+        with fake_server() as server:
+            service = ReceiverService(listener=listener)
+            self.addCleanup(service.close)
+            service.radio("connect", settings=RigSettings(connection="external",
+                          port=server.server_address[1], settle_s=0))
+            service.radio("tune", frequency_hz=2187500, centre_hz=1700)
+            service.start(ReceiverSettings())
+            self.assertTrue(entries[0].wait(2))
+            service.radio("tune", frequency_hz=8414500, centre_hz=1700)
+            self.assertTrue(entries[1].wait(2))
+            records = service.snapshot()["messages"]
+            self.assertEqual([r["rig"]["frequency_hz"] for r in records], [2187500, 2187500, 8414500])
+            self.assertEqual([r["receiver_session"] for r in records], [1, 1, 2])
+            server.fail = "set_freq"
+            with self.assertRaises(RigError):
+                service.radio("tune", frequency_hz=4207500, centre_hz=1700)
+            self.assertEqual(service.snapshot()["state"], "Stopped")
+            self.assertIsNone(service.snapshot()["rig"])
+            self.assertIn("RPRT", service.snapshot()["rig_error"])
+            self.assertEqual(len(runs), 2)  # failure must not restart capture
+            service.close()
+
+    def test_shared_radio_operation_is_exclusive_and_snapshot_does_not_block(self):
+        entered, release = Event(), Event()
+        service = ReceiverService()
+        self.addCleanup(service.close)
+        with fake_server() as server:
+            service.radio("connect", settings=RigSettings(connection="external",
+                          port=server.server_address[1], settle_s=0))
+            original = service._rig.tune
+            def delayed(*args):
+                entered.set()
+                release.wait(3)
+                return original(*args)
+            with patch.object(service._rig, "tune", side_effect=delayed):
+                worker = Thread(target=lambda: service.radio("tune", frequency_hz=2187500, centre_hz=1700))
+                worker.start()
+                try:
+                    self.assertTrue(entered.wait(2))
+                    self.assertTrue(service.snapshot()["rig_busy"])
+                    with self.assertRaisesRegex(ValueError, "already"):
+                        service.start(ReceiverSettings())
+                    with self.assertRaisesRegex(ValueError, "already"):
+                        service.radio("disconnect")
+                finally:
+                    release.set()
+                    worker.join(3)
+            service.radio("disconnect")
+            self.assertFalse(service.snapshot()["rig_connected"])
