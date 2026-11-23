@@ -1,6 +1,6 @@
 """WAV and live soundcard interfaces. SPDX-License-Identifier: GPL-3.0-or-later"""
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import sys
@@ -172,6 +172,39 @@ def encode(args):
     return 0
 
 
+def transmit_command(args):
+    from .profiles import ProfileStore
+    from .ham_tx import TxRequest, transmit_once, POSITION_DEFAULTS
+    if not args.profile:
+        raise ValueError("Choose a station with --profile")
+    profile = ProfileStore(args.config).get(args.profile)
+    overrides = {key: getattr(args, option) for option, key in (
+        ("band_plan", "band_plan"), ("callsign", "callsign"), ("device", "output_device"),
+        ("output_channel", "output_channel"), ("level", "level")) if getattr(args, option) is not None}
+    settings = replace(profile.tx, **overrides)
+    position = profile.position | {k: v for k, v in vars(args).items() if k in POSITION_DEFAULTS}
+    request = TxRequest(kind=args.command.removeprefix("transmit-"), source=args.source,
+        destination=args.destination, frequency_hz=args.frequency_khz*1000, settings=settings,
+        centre_hz=args.centre if args.centre is not None else profile.audio.centre_hz,
+        locator=args.locator, cw_wpm=args.cw_wpm, acknowledgement=getattr(args, "ack", False),
+        position=position)
+    message = request.prepare()
+    if args.dry_run:
+        print(json.dumps(message.record | dict(transmitted=False, dry_run=True), indent=2, allow_nan=False))
+        return 0
+    if not profile.rig.allow_ptt:
+        raise ValueError("Enable allow_ptt in this station's rig settings before transmitting")
+    rig = RigController()
+    try:
+        rig.connect(profile.rig)
+        result = transmit_once(rig, message,
+            progress=lambda text: print(text, file=sys.stderr, flush=True))
+        print(json.dumps(result, indent=2, allow_nan=False))
+    finally:
+        rig.close()
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="MF/HF DSC audio experiments")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -181,6 +214,25 @@ def main(argv=None):
     report = commands.add_parser("encode-position", help="Encode a safety position acknowledgement (EOS 122)")
     encoder_arguments(report)
     position_arguments(report)
+    for kind in ("test", "position"):
+        tx = commands.add_parser("transmit-" + kind, help="Send one amateur CW + DSC burst using CAT PTT")
+        profile_arguments(tx)
+        tx.add_argument("--frequency-khz", required=True, type=float, help="DSC RF centre, NOT the USB dial")
+        tx.add_argument("--source", required=True)
+        tx.add_argument("--destination", required=True)
+        tx.add_argument("--band-plan", choices=("uk",), help="Allocation boundaries; defaults to saved TX plan")
+        tx.add_argument("--callsign", help="Required CW ID; defaults to saved TX callsign")
+        tx.add_argument("--device", type=device_argument, help="Explicit radio audio output; defaults to saved TX device")
+        tx.add_argument("--output-channel", type=int)
+        tx.add_argument("--level", type=float, help="Audio amplitude multiplier, 0.001–1 (default: 0.25)")
+        tx.add_argument("--centre", type=float)
+        tx.add_argument("--locator", default="", help="CW locator; 'auto' for transmit-position")
+        tx.add_argument("--cw-wpm", type=float, default=18)
+        tx.add_argument("--dry-run", action="store_true", help="Validate and print the plan without opening radio/audio")
+        if kind == "test":
+            tx.add_argument("--ack", action="store_true")
+        else:
+            position_arguments(tx, suppress_defaults=True)
     position = commands.add_parser("position", help="Read one fresh position and print JSON; no audio")
     position_arguments(position)
     commands.add_parser("ports", help="List serial ports for GPS or radio control (gps extra)")
@@ -220,6 +272,8 @@ def main(argv=None):
     position_arguments(server, suppress_defaults=True)
     args = parser.parse_args(argv)
     try:
+        if args.command in ("transmit-test", "transmit-position"):
+            return transmit_command(args)
         if args.command == "rigs":
             print(list_models(args.rigctld), end="")
             return 0

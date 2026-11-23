@@ -15,6 +15,7 @@ from .live import WindowDecoder, listen
 from .position import get_fix
 from .records import result_dict
 from .rig import RigController, usb_dial
+from .ham_tx import transmit_once
 
 
 @dataclass(frozen=True)
@@ -36,9 +37,10 @@ class ReceiverService:
     """One capture worker, one optional fix worker, and bounded in-memory history."""
 
     def __init__(self, *, listener=listen, fix_reader=get_fix, history_size=200, rig=None,
-                 settings=None):
+                 settings=None, tx_sender=transmit_once):
         self._listen = listener
         self._get_fix = fix_reader
+        self._tx_sender = tx_sender
         self._lock = Lock()
         self._control_lock = Lock()
         self._rig = rig if rig is not None else RigController()
@@ -62,6 +64,11 @@ class ReceiverService:
         self._fix_error = ""
         self._fix_limit = 30.0
         self._fix_pending = False
+        self._tx_cancel = Event()
+        self._tx_state = "Idle"
+        self._tx_error = ""
+        self._tx_result = None
+        self._tx_active = False
 
     def log(self, message):
         with self._lock:
@@ -70,6 +77,8 @@ class ReceiverService:
     def start(self, settings):
         settings.validate()
         with self._operation():
+            if self._rig.ptt_uncertain:
+                raise ValueError("PTT state is uncertain: reception remains stopped")
             self._start(settings)
 
     def _start(self, settings):
@@ -172,6 +181,56 @@ class ReceiverService:
             if not self._stop.is_set():
                 self._state = "Receiving"
 
+    def transmit(self, request):
+        """Run in a worker; one station operation across all browser clients."""
+        with self._operation():
+            with self._lock:
+                if self._closed:
+                    raise ValueError("Server is shutting down")
+                if self._fix_pending:
+                    raise ValueError("Wait for the current position read to finish")
+                self._tx_cancel.clear()
+                self._tx_state, self._tx_error, self._tx_result = "Preparing", "", None
+                self._tx_active = True
+                running = self._thread is not None and self._thread.is_alive()
+            try:
+                self._rig.require_tx()
+                if running:
+                    self._stop_capture()
+                    self._thread.join(timeout=15)
+                    if self._thread.is_alive():
+                        raise ValueError("Receiver is still stopping; transmission cancelled")
+                with self._lock:
+                    self._rig_state = None
+                message = request.prepare(fix_reader=self._get_fix)
+                result = self._tx_sender(self._rig, message, cancel=self._tx_cancel,
+                                        progress=self._tx_progress)
+                with self._lock:
+                    self._tx_result = result
+                    self._rig_state = result["rig"]
+                    self._settings = replace(self._settings, centre_hz=request.centre_hz)
+                if running and not self._closed:
+                    self._start(self._settings)
+                return result
+            except Exception as exc:
+                with self._lock:
+                    self._tx_state, self._tx_error = "Stopped", str(exc)
+                    self._rig_error = str(exc) if self._rig.ptt_uncertain else ""
+                self.log(f"TX stopped: {exc}")
+                raise
+            finally:
+                with self._lock:
+                    self._rig_connected = self._rig.connected
+                    self._tx_active = False
+
+    def _tx_progress(self, text):
+        with self._lock:
+            self._tx_state = text
+        self.log(text)
+
+    def abort_tx(self):
+        self._tx_cancel.set()
+
     def _emit(self, result, segment, decoded_at):
         record = result_dict(result)
         with self._lock:
@@ -214,6 +273,8 @@ class ReceiverService:
         with self._lock:
             if self._closed:
                 raise ValueError("Server is shutting down")
+            if self._rig_busy:
+                raise ValueError("Wait for the current radio operation to finish")
             if self._position_thread is not None and self._position_thread.is_alive():
                 raise ValueError("A position read is already in progress")
             self._fix, self._fix_error = None, ""
@@ -248,6 +309,10 @@ class ReceiverService:
                 rig=self._rig_state, rig_connected=self._rig_connected,
                 rig_busy=self._rig_busy, rig_error=self._rig_error,
                 station=self._station,
+                tx_state=self._tx_state, tx_error=self._tx_error, tx_result=self._tx_result,
+                tx_active=self._tx_active,
+                ptt_uncertain=self._rig.ptt_uncertain,
+                tx_available=bool(self._rig.settings and self._rig.settings.allow_ptt),
             ))
 
     def jsonl(self):
@@ -257,6 +322,7 @@ class ReceiverService:
     def close(self, timeout=5.0):
         with self._lock:
             self._closed = True
+        self.abort_tx()
         self._stop_capture()
         if self._thread is not None:
             self._thread.join(timeout=timeout)

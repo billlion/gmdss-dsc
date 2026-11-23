@@ -2,10 +2,87 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 from math import gcd
+from threading import Event
 import re
 import numpy as np
 from scipy.signal import resample_poly
 from .live import load_sounddevice, AudioInputError
+
+
+class PreparedPlayback:
+    """Prepare an output stream without starting it; callback playback is bounded.
+
+    The rig TX caller handles PTT before closing this stream, even if a driver
+    stalls in abort/close. PortAudio's finished callback means the final output
+    buffer has drained after CallbackStop.
+    """
+    def __init__(self, audio, sample_rate, *, device, channel):
+        self.audio = np.asarray(audio, dtype=np.float32)
+        if (self.audio.ndim != 1 or not len(self.audio) or not np.all(np.isfinite(self.audio))
+                or np.max(np.abs(self.audio)) > 1):
+            raise ValueError("Playback requires nonempty finite mono audio in [-1, 1]")
+        self.sample_rate, self.device, self.channel = sample_rate, device, channel
+        self.stream = None
+        self.finished = Event()
+        self.cancel = Event()
+        self.error = None
+        self.index = 0
+
+    def __enter__(self):
+        self.sd = load_sounddevice()
+        try:
+            info = self.sd.query_devices(self.device, "output")
+            rate = round(info["default_samplerate"])
+            if self.channel > info["max_output_channels"]:
+                raise ValueError("Selected output device does not have that channel")
+            self.sd.check_output_settings(device=self.device, channels=self.channel,
+                                          samplerate=rate, dtype="float32")
+            if rate != self.sample_rate:
+                divisor = gcd(rate, self.sample_rate)
+                self.audio = resample_poly(self.audio, rate//divisor,
+                                          self.sample_rate//divisor).astype(np.float32)
+            self.stream = self.sd.OutputStream(device=self.device, channels=self.channel,
+                samplerate=rate, dtype="float32", callback=self._callback,
+                finished_callback=self.finished.set)
+            return self
+        except self.sd.PortAudioError as exc:
+            raise AudioInputError(f"Cannot open radio output: {exc}") from exc
+
+    def _callback(self, outdata, frames, timing, status):
+        outdata.fill(0)
+        if self.cancel.is_set():
+            raise self.sd.CallbackAbort
+        if status:
+            self.error = AudioInputError(f"Audio output failed: {status}; burst may be incomplete")
+            raise self.sd.CallbackAbort
+        count = min(frames, len(self.audio) - self.index)
+        outdata[:count, self.channel-1] = self.audio[self.index:self.index+count]
+        self.index += count
+        if self.index == len(self.audio):
+            raise self.sd.CallbackStop
+
+    def play(self, cancel):
+        self.cancel = cancel
+        try:
+            self.stream.start()
+        except self.sd.PortAudioError as exc:
+            raise AudioInputError(f"Cannot start radio output: {exc}") from exc
+        while not self.finished.wait(0.05):
+            if cancel.is_set():
+                # Do not block in a driver abort before caller has released PTT.
+                return
+        if self.error is not None:
+            raise self.error
+
+    def __exit__(self, *args):
+        if self.stream is not None:
+            try:
+                try:
+                    self.stream.abort()
+                finally:
+                    self.stream.close()
+            except self.sd.PortAudioError as exc:
+                raise AudioInputError(f"Cannot close radio output: {exc}") from exc
 
 MORSE = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/", (
     ".-", "-...", "-.-.", "-..", ".", "..-.", "--.", "....", "..", ".---",

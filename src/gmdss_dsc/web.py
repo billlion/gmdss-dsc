@@ -12,8 +12,9 @@ from .cli import centre_argument, device_argument, position_arguments
 from .live import AudioInputError, list_devices
 from .receiver import ReceiverService, ReceiverSettings
 from .web_access import AccessGuard, access_password
-from .profiles import ProfileStore
+from .profiles import ProfileStore, StationProfile
 from .web_rig import RigPanel
+from .web_tx import TxPanel
 
 
 def build_page(service, position_defaults, store=None, profile_name=None):
@@ -47,11 +48,13 @@ def build_page(service, position_defaults, store=None, profile_name=None):
     """)
     with ui.header().classes("items-center justify-between").style("background: #153f50; padding: 14px 24px"):
         with ui.column().classes("gap-0"):
-            ui.label("DSC receiver").classes("text-xl font-semibold")
+            ui.label("DSC station").classes("text-xl font-semibold")
             ui.label("MF / HF · local station").classes("text-xs opacity-80")
         with ui.row().classes("items-center gap-3"):
-            ui.label("RECEIVE").classes("text-xs tracking-widest").style("color: #f1ce7c")
+            ui.label("RX / AMATEUR TX").classes("text-xs tracking-widest").style("color: #f1ce7c")
             status = ui.badge("Stopped", color="grey")
+            header_abort = ui.button("Abort transmission", on_click=service.abort_tx,
+                                     color="negative").props("no-caps")
 
     def notify_error(exc):
         ui.notify(str(exc), type="negative", timeout=8000)
@@ -64,7 +67,7 @@ def build_page(service, position_defaults, store=None, profile_name=None):
             return
         with ui.dialog() as dialog, ui.card().classes("w-full max-w-2xl"):
             ui.label("Audio devices on the server").classes("dsc-title")
-            ui.label("Enter the ID or unique name of an input device.").classes("dsc-muted")
+            ui.label("Enter the ID or unique name of the required input or output device.").classes("dsc-muted")
             ui.label(text or "No audio devices found.").classes("dsc-detail")
             ui.button("Close", on_click=dialog.close).props("flat")
         dialog.open()
@@ -128,7 +131,8 @@ def build_page(service, position_defaults, store=None, profile_name=None):
                 # Callbacks are evaluated after the position form below exists.
                 rig_panel = RigPanel(service, store or ProfileStore(), profile_name,
                                      audio_settings, set_audio,
-                                     lambda: position_settings(), lambda values: set_position(values))
+                                     lambda: position_settings(), lambda values: set_position(values),
+                                     lambda: tx_panel.settings(), lambda values: tx_panel.apply(values))
 
                 with ui.card().classes("dsc-card"):
                     ui.label("Own position").classes("dsc-title")
@@ -228,6 +232,9 @@ def build_page(service, position_defaults, store=None, profile_name=None):
                     ui.button("Download JSONL", on_click=lambda: ui.download.content(
                         service.jsonl(), "dsc-messages.jsonl", media_type="application/x-ndjson")).props("flat no-caps")
                     ui.label("History lasts until the server exits. Download it to keep a copy.").classes("dsc-muted")
+                initial_profile = (StationProfile.from_dict(station["profile"]) if station else
+                                   store.get(profile_name) if profile_name and store else StationProfile())
+                tx_panel = TxPanel(service, initial_profile.tx, audio_settings, position_settings, devices)
                 with ui.expansion("Receiver activity", icon="list").classes("w-full"):
                     activity = ui.label().classes("dsc-detail text-xs w-full")
 
@@ -237,12 +244,16 @@ def build_page(service, position_defaults, store=None, profile_name=None):
         nonlocal last_count
         snapshot = service.snapshot()
         state = snapshot["state"]
-        status.set_text(state)
-        status.props("color=" + {"Receiving": "positive", "Error": "negative",
+        status.set_text("TX active" if snapshot["tx_active"] else
+                        "PTT unconfirmed" if snapshot["ptt_uncertain"] else state)
+        header_abort.set_visibility(snapshot["tx_active"])
+        status.props("color=" + ("negative" if snapshot["tx_active"] or snapshot["ptt_uncertain"] else
+                                {"Receiving": "positive", "Error": "negative",
                                  "Starting": "secondary", "Stopping": "secondary"}.get(state, "grey"))
+                     )
         error.set_text(snapshot["error"])
         running = state in ("Starting", "Receiving", "Stopping")
-        start_button.set_enabled(not running and not snapshot["rig_busy"])
+        start_button.set_enabled(not running and not snapshot["rig_busy"] and not snapshot["ptt_uncertain"])
         stop_button.set_enabled(running and state != "Stopping" and not snapshot["rig_busy"])
         for widget in (device, rate, channel, centre):
             widget.set_enabled(not running and not snapshot["rig_busy"])
@@ -250,6 +261,7 @@ def build_page(service, position_defaults, store=None, profile_name=None):
         if running and not snapshot["rig_busy"]:
             set_audio(ReceiverSettings(**current))
         rig_panel.refresh(snapshot)
+        tx_panel.refresh(snapshot, audio_settings)
         active_settings.set_text(f"Device: {current['device'] if current['device'] is not None else 'system default'} · "
                                  f"{current['sample_rate']} Hz · channel {current['channel']} · "
                                  f"centre {current['centre_hz'] if current['centre_hz'] is not None else 'auto'}")
@@ -265,7 +277,7 @@ def build_page(service, position_defaults, store=None, profile_name=None):
             count.set_text(f"{snapshot['count']} decoded")
             last_count = snapshot["count"]
         activity.set_text("\n".join(snapshot["events"]) or "No receiver activity yet.")
-        position_button.set_enabled(not snapshot["position_pending"])
+        position_button.set_enabled(not snapshot["position_pending"] and not snapshot["rig_busy"])
         fix = snapshot["position"]
         if snapshot["position_pending"]:
             position_status.set_text("Reading position…")

@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 from unittest.mock import patch
 import tempfile
+from dataclasses import replace
 
 from nicegui import ui
 from scipy.signal import resample_poly
@@ -13,7 +14,8 @@ from gmdss_dsc.modem import read_wav
 from gmdss_dsc.receiver import ReceiverService
 from gmdss_dsc.web import configure_app
 from gmdss_dsc.profiles import ProfileStore, StationProfile
-from gmdss_dsc.rig import RigSettings
+from gmdss_dsc.rig import RigSettings, RigController
+from gmdss_dsc.ham_tx import TxSettings, transmit_once
 from fake_rigctld import fake_server
 
 
@@ -36,11 +38,22 @@ if __name__ == "__main__":
     position_arguments(parser)
     parser.add_argument("--port", type=int, required=True)
     args = parser.parse_args()
-    service = ReceiverService()
     with tempfile.TemporaryDirectory() as tmp, fake_server() as rig, patch("gmdss_dsc.live.capture_blocks", capture):
+        class FixtureRig(RigController):
+            def connect(self, settings):
+                result = super().connect(RigSettings(connection="external", port=rig.server_address[1], settle_s=0))
+                self.settings = replace(settings, settle_s=0)
+                return result
+        class SilentOutput:
+            def __init__(self, *args, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def play(self, cancel): cancel.wait(1.5)
+        service = ReceiverService(rig=FixtureRig(), tx_sender=lambda *a, **kw:
+                                  transmit_once(*a, **kw, playback_factory=SilentOutput))
         store = ProfileStore(Path(tmp)/"stations.toml")
-        store.save("test", StationProfile(radio="Browser test rig", rig=RigSettings(connection="external",
-                    port=rig.server_address[1], settle_s=0)))
+        store.save("test", StationProfile(radio="Browser test rig", rig=RigSettings(allow_ptt=True, settle_s=0),
+                   tx=TxSettings(band_plan="uk", callsign="M0ABC", output_device="Simulated radio")))
         configure_app(service, vars(args), "browser-test-password", store, "test")
         ui.run(host="127.0.0.1", port=args.port, reload=False, show=False,
                fastapi_docs=False, proxy_headers=False)
