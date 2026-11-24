@@ -40,7 +40,7 @@ def main():
             request = Request(url, headers={"Authorization": "Basic " + credential})
             with urlopen(request, timeout=10) as response:
                 assert response.status == 200
-                assert "DSC receiver" in response.read().decode()
+                assert "DSC station" in response.read().decode()
             if "--http-only" in sys.argv:
                 print("Authenticated page rendered; unauthenticated HTTP rejected.")
                 return
@@ -128,9 +128,27 @@ def main():
                 assert records[-2]["rig"]["frequency_hz"] == 2187500
                 assert records[-1]["rig"]["frequency_hz"] == 8414500
                 assert records[-2]["receiver_session"] != records[-1]["receiver_session"]
+                # TX is explicit, allocation checked and serialized with RX.
+                phone.get_by_label("TX source address (9 digits)", exact=True).fill("891234567")
+                phone.get_by_label("TX destination address (9 digits)", exact=True).fill("897654321")
+                phone.get_by_label("TX DSC centre (kHz)", exact=True).fill("2187.5")
+                expect(phone.get_by_role("button", name="Transmit once", exact=True)).to_be_disabled()
+                phone.get_by_label("TX DSC centre (kHz)", exact=True).fill("7101.7")
+                phone.get_by_role("button", name="Transmit once", exact=True).click()
+                expect(phone.get_by_text("Transmitting CW identification and DSC", exact=True)).to_be_visible()
+                expect(phone.get_by_role("button", name="Tune USB", exact=True)).to_be_disabled()
+                expect(phone.get_by_text("Complete; PTT off confirmed", exact=True)).to_be_visible()
+                expect(phone.get_by_text("Receiving", exact=True)).to_be_visible()
+                phone.get_by_role("button", name="Last TX JSON", exact=True).click()
+                expect(phone.get_by_text('"ptt_off_confirmed": true', exact=False)).to_be_visible()
+                phone.get_by_role("button", name="Close", exact=True).click()
+                phone.get_by_role("button", name="Transmit once", exact=True).click()
+                expect(phone.get_by_text("Transmitting CW identification and DSC", exact=True)).to_be_visible()
+                phone.get_by_role("button", name="Abort TX", exact=True).click()
+                expect(phone.get_by_text("Transmission cancelled or timed out", exact=True).first).to_be_visible()
                 phone.get_by_role("button", name="Disconnect radio", exact=True).click()
                 expect(phone.get_by_text("Disconnected", exact=True)).to_be_visible()
-                expect(phone.get_by_text("Stopped", exact=True)).to_be_visible()
+                expect(phone.get_by_text("Stopped", exact=True).first).to_be_visible()
                 phone.get_by_text("Save station settings", exact=True).click()
                 phone.get_by_label("Profile name", exact=True).fill("saved-test")
                 phone.get_by_role("button", name="Save station", exact=True).click()
@@ -153,7 +171,7 @@ def main():
                 assert not errors, errors
                 assert not external, external
                 browser.close()
-            print("Browser smoke passed: authentication, decode, JSON, shared state, reconnect, position, rig tune/readback, retune while receiving, profiles, phone layout, offline assets.")
+            print("Browser smoke passed: authentication, decode, JSON, shared state, reconnect, position, rig tune/readback, retune while receiving, TX allocation guard/completion/abort, profiles, phone layout, offline assets.")
         except Exception:
             log.seek(0)
             print(log.read())

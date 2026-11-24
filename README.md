@@ -149,9 +149,10 @@ adding quote characters in the GUI.
 The default connection mode starts a local helper when **Connect radio** is
 pressed, bound to `127.0.0.1` on an automatically selected port. It keeps the
 serial connection open until **Disconnect radio** or server shutdown. It
-disables Hamlib PTT (`-P NONE`) and its readback cache (`-C cache_timeout=0`),
-so verification requests new backend readings. This implementation sends only frequency/mode
-queries and USB/frequency settings; it has no transmit action. **Connect radio**
+disables Hamlib PTT by default (`-P NONE`) and its readback cache (`-C cache_timeout=0`),
+so verification requests new backend readings. Explicitly enabling CAT PTT for
+the IC-7100 or dummy changes this to `-P RIG`; see [amateur TX](docs/tx.md).
+**Connect radio**
 only reads the current state. **Tune USB** applies the requested tuning.
 
 Alternatively choose **Use an existing rigctld** and enter its host/port.
@@ -169,7 +170,7 @@ is tuned lower by the audio centre, which is in **Hz**:
 DSC centre 2187.5 kHz − audio centre 1.7 kHz = USB dial 2185.8 kHz
 ```
 
-Frequency presets cover the six MF/HF DSC channels; a custom MF/HF frequency
+Frequency presets cover the six MF/HF DSC channels; a custom frequency up to 54 MHz
 can be entered, including amateur frequencies. Tuning requires an explicit
 audio centre (`auto` remains available for manually tuned reception).
 The app sets USB with Hamlib's default passband, allows the configured settling
@@ -194,7 +195,8 @@ daemon because its backend is not determined by this client's profile.
 Some Hamlib backends, including the Icom marine backend in its default state,
 set both RX and TX frequency registers when setting the main frequency. Thus
 RX operation here means **no keying or audio transmission**; it does not promise
-to preserve the radio's stored TX frequency. Physical radios still need testing.
+to preserve the radio's stored TX frequency. Vic has tested RX control on an
+IC-7100; the M801E/M802/M803/M804 combinations still need separate verification.
 
 ### Saved Home and Tui profiles
 
@@ -395,6 +397,12 @@ Actual USB-radio capture still needs testing on the user's equipment.
 
 ## CW identification, position and soundcard output
 
+For automatic keying, see **[Amateur TX with Hamlib PTT](docs/tx.md)**:
+`transmit-test`, `transmit-position`, and the browser's **Amateur transmission**
+panel. These require explicit opt-in, a CW callsign, a selected output device
+and a UK amateur allocation check. The existing `encode-* --play` commands
+below remain audio-only.
+
 Install the optional audio and serial-GPS dependencies on Windows, Linux or macOS:
 
 ```sh
@@ -582,6 +590,8 @@ assert TestCall.from_frame(received.decoded.frame) == call
 - `live.py`: optional soundcard capture, overlapping decode windows and deduplication.
 - `position.py`: position providers, freshness checks and Maidenhead conversion.
 - `transmit.py`: CW identification and optional soundcard playback.
+- `ham_tx.py`: amateur allocation checks, one-shot messages and CAT PTT watchdog.
+- `web_tx.py`: explicit shared browser TX and abort controls.
 - `cli.py`: WAV/live input and JSON results.
 
 `Frame.information` contains the format symbol **once**, followed by the

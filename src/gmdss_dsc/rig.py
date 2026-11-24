@@ -1,6 +1,4 @@
-"""Receive-side Hamlib client and an optional process-owned rigctld helper.
-
-No Python Hamlib bindings, raw CAT commands or PTT commands are exposed.
+"""Hamlib client and an optional process-owned rigctld helper.
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 from dataclasses import dataclass
@@ -31,8 +29,13 @@ class RigSettings:
     port: int = 4532
     timeout_s: float = 3.0
     settle_s: float = 0.3
+    allow_ptt: bool = False
 
     def validate(self):
+        if type(self.allow_ptt) is not bool:
+            raise ValueError("allow_ptt must be true or false")
+        if self.allow_ptt and (self.connection != "managed" or self.model not in (1, 3070)):
+            raise ValueError("CAT TX currently supports a managed IC-7100 (3070) or dummy (1) only")
         if self.connection not in ("managed", "external"):
             raise ValueError("Rig connection must be managed or external")
         for name, value, low, high in (
@@ -63,7 +66,7 @@ class RigSettings:
     def command(self, port):
         self.validate()
         command = [self.executable, "-m", str(self.model), "-T", "127.0.0.1",
-                   "-t", str(port), "-P", "NONE"]
+                   "-t", str(port), "-P", "RIG" if self.allow_ptt else "NONE"]
         configuration = ["cache_timeout=0"]  # readback must query the backend
         if self.device:
             command += ["-r", self.device, "-s", str(self.baud)]
@@ -77,8 +80,8 @@ class RigSettings:
 
 def usb_dial(frequency_hz, centre_hz):
     """RF FSK centre minus positive audio centre is the USB suppressed carrier."""
-    if not math.isfinite(frequency_hz) or not 100000 <= frequency_hz <= 30000000:
-        raise ValueError("DSC frequency must be between 100 and 30000 kHz")
+    if not math.isfinite(frequency_hz) or not 100000 <= frequency_hz <= 54000000:
+        raise ValueError("DSC frequency must be between 100 and 54000 kHz")
     if centre_hz is None or not math.isfinite(centre_hz) or not 85 < centre_hz < 3915:
         raise ValueError("Rig tuning needs an explicit audio centre between 85 and 3915 Hz")
     return round(frequency_hz - centre_hz)
@@ -111,6 +114,9 @@ class RigController:
         self._socket = self._reader = self._process = self._log = None
         self.settings = None
         self._status = None
+        self._endpoint = None
+        self.ptt_uncertain = False
+        self._pending = b""
 
     @property
     def connected(self):
@@ -124,6 +130,8 @@ class RigController:
     def connect(self, settings):
         settings.validate()
         with self._lock:
+            if self.ptt_uncertain:
+                raise RigError("PTT state is uncertain: disconnect/release before reconnecting")
             if self.connected:
                 raise RigError("Disconnect the current radio before connecting another")
             self.settings = settings
@@ -154,6 +162,7 @@ class RigController:
                 else:
                     self._socket = socket.create_connection((host, port), timeout=settings.timeout_s)
                 self._socket.settimeout(settings.timeout_s)
+                self._endpoint = (host, port)
                 self._reader = self._socket.makefile("rb")
                 status = self.read()
                 if self._process is not None and self._process.poll() is not None:
@@ -174,14 +183,28 @@ class RigController:
             raise RigError("Connect a radio first")
         try:
             deadline = time.monotonic() + self.settings.timeout_s
+            self._socket.settimeout(self.settings.timeout_s)
             self._socket.sendall(("+\\" + command + "\n").encode("ascii"))
             fields = {}
             for index in range(64):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Radio response timed out")
-                self._socket.settimeout(remaining)
-                raw = self._reader.readline(4097)
+                # recv with an absolute deadline also bounds a peer dribbling
+                # one byte at a time; buffered readline only bounds idle time.
+                while b"\n" not in self._pending:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("Radio response timed out")
+                    if len(self._pending) > 4096:
+                        raise ValueError("Overlong rigctld response")
+                    self._socket.settimeout(remaining)
+                    chunk = self._socket.recv(4097)
+                    if not chunk:
+                        raise ValueError("Incomplete rigctld response")
+                    self._pending += chunk
+                line_bytes, self._pending = self._pending.split(b"\n", 1)
+                raw = line_bytes + b"\n"
                 if not raw or len(raw) > 4096 or not raw.endswith(b"\n"):
                     raise ValueError("Incomplete or overlong rigctld response")
                 line = raw.decode("ascii").strip()
@@ -195,9 +218,16 @@ class RigController:
                     raise ValueError("Unexpected rigctld response; use the default non-VFO protocol")
                 if separator:
                     fields[key] = value.strip()
+                elif command == "get_func VOX":
+                    fields["Func Status"] = line
             raise ValueError("Too many lines in rigctld response")
         except (OSError, ValueError) as exc:
-            self.close()  # a partial reply must never become the next reply
+            # Retain the owned daemon while PTT might be on, so a fresh
+            # connection can release it even after a lost key-on reply.
+            if self.ptt_uncertain:
+                self._drop_transport()
+            else:
+                self.close()
             raise RigError(f"Lost radio connection: {exc}") from exc
 
     def read(self):
@@ -223,6 +253,8 @@ class RigController:
     def tune(self, frequency_hz, centre_hz):
         dial = usb_dial(frequency_hz, centre_hz)
         with self._lock:
+            if self.ptt_uncertain:
+                raise RigError("PTT state is uncertain: tuning is blocked until release is confirmed")
             self._status = None
             self._command("set_mode USB 0")
             self._command(f"set_freq {dial}")
@@ -237,12 +269,9 @@ class RigController:
 
     def close(self):
         with self._lock:
-            if self._reader is not None:
-                self._reader.close()
-            if self._socket is not None:
-                self._socket.close()
-            self._reader = self._socket = None
-            self._status = None
+            if self.ptt_uncertain:
+                self.release_ptt()
+            self._drop_transport()
             if self._process is not None:
                 if self._process.poll() is None:
                     self._process.terminate()
@@ -255,3 +284,87 @@ class RigController:
             if self._log is not None:
                 self._log.close()
                 self._log = None
+
+    def _drop_transport(self):
+        if self._reader is not None:
+            self._reader.close()
+        if self._socket is not None:
+            self._socket.close()
+        self._reader = self._socket = None
+        self._status = None
+        self._pending = b""
+
+    def require_tx(self):
+        if (not self.connected or self.settings is None or not self.settings.allow_ptt
+                or self.settings.connection != "managed" or self.settings.model not in (1, 3070)):
+            raise RigError("Connect a managed IC-7100 or dummy with CAT PTT enabled first")
+        if self.ptt_uncertain:
+            raise RigError("PTT state is uncertain: stop the transmitter locally before continuing")
+
+    def check_idle(self):
+        with self._lock:
+            if self._command("get_ptt").get("PTT") != "0":
+                raise RigError("Radio is already transmitting or PTT state is unreadable")
+
+    def prepare_tx(self, frequency_hz, centre_hz):
+        """IC-7100 simplex VFO A only; do not infer TX from a marine RX VFO.
+
+        The IC-7100 has RIT but no XIT. Explicit VFO selection avoids memory
+        channel TX offsets. Split and DUP must both read back as off.
+        """
+        self.require_tx()
+        with self._lock:
+            self.check_idle()
+            self._command("set_vfo VFOA")
+            self._check_simplex()
+            state = self.tune(frequency_hz, centre_hz)
+            self._check_simplex()  # tuning must not have enabled an automatic offset
+            self.check_idle()
+            return state
+
+    def _check_simplex(self):
+        if self._command("get_split_vfo").get("Split") != "0":
+            raise RigError("Turn SPLIT off on the radio before transmitting")
+        if self._command("get_rptr_shift").get("Rptr Shift") != "None":
+            raise RigError("Turn DUP/repeater shift off before transmitting")
+        # Dummy models arbitrary XIT; the IC-7100 has no XIT facility.
+        if self.settings.model == 1 and self._command("get_xit").get("XIT") != "0":
+            raise RigError("Turn XIT off before transmitting")
+        if self._command("get_func VOX").get("Func Status") != "0":
+            raise RigError("Turn VOX off before using CAT PTT")
+
+    def key_ptt(self):
+        with self._lock:
+            self.ptt_uncertain = True  # BEFORE sending: the acknowledgement may be lost
+            self._command("set_ptt 1")
+            if self._command("get_ptt").get("PTT") != "1":
+                raise RigError("Radio did not confirm PTT on")
+
+    def release_ptt(self):
+        """Independent transport, usable after a failed command or audio stall.
+
+        Never terminate the owned helper if release cannot be confirmed.
+        No key-on retry is made. Calling code serializes key/release attempts.
+        """
+        if not self.ptt_uncertain:
+            return
+        detail = "No recovery endpoint"
+        if self._endpoint is not None:
+            for _ in range(2):
+                client = RigController()
+                try:
+                    client.settings = self.settings
+                    client._socket = socket.create_connection(self._endpoint, timeout=self.settings.timeout_s)
+                    client._socket.settimeout(self.settings.timeout_s)
+                    client._reader = client._socket.makefile("rb")
+                    client._command("set_ptt 0")
+                    if client._command("get_ptt").get("PTT") != "0":
+                        raise RigError("PTT off readback failed")
+                    self.ptt_uncertain = False
+                    return
+                except (OSError, RigError) as exc:
+                    detail = str(exc)
+                finally:
+                    client.close()
+        raise RigError(f"PTT OFF UNCONFIRMED — stop the transmitter locally. "
+                       f"Helper retained at {self._endpoint}: {detail}")

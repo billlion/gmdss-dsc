@@ -1,6 +1,7 @@
 """Small adversarial ERP fixture, never opens a radio or soundcard."""
 from contextlib import contextmanager
 import socketserver
+import time
 from threading import Thread
 
 
@@ -17,6 +18,14 @@ class Server(socketserver.ThreadingTCPServer):
         self.drop = None
         self.ignore_tune = False
         self.fragment = False
+        self.ptt = 0
+        self.split = 0
+        self.shift = "None"
+        self.xit = 0
+        self.vox = 0
+        self.lose_key_reply = False
+        self.refuse_release = False
+        self.key_byte_delay = 0
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -41,13 +50,37 @@ class Handler(socketserver.StreamRequestHandler):
                     self.server.dial = int(args[0])
             elif verb == "set_mode":
                 self.server.mode = args[0]
+            elif verb == "set_vfo":
+                pass
+            elif verb == "get_split_vfo":
+                body = f"Split: {self.server.split}\nTX VFO: VFOA\n"
+            elif verb == "get_rptr_shift":
+                body = f"Rptr Shift: {self.server.shift}\n"
+            elif verb == "get_xit":
+                body = f"XIT: {self.server.xit}\n"
+            elif verb == "get_func":
+                body = f"{self.server.vox}\n"
+            elif verb == "get_ptt":
+                body = f"PTT: {self.server.ptt}\n"
+            elif verb == "set_ptt":
+                if args[0] == "0" and self.server.refuse_release:
+                    code = -1
+                else:
+                    self.server.ptt = int(args[0])
+                if args[0] == "1" and self.server.lose_key_reply:
+                    return
             else:
                 code = -4
             reply = f"{verb}: {' '.join(args)}\n{body}RPRT {code}\n".encode()
-            if self.server.fragment:
+            if self.server.fragment or (verb == "set_ptt" and args == ["1"] and self.server.key_byte_delay):
                 for byte in reply:
-                    self.wfile.write(bytes([byte]))
-                    self.wfile.flush()
+                    try:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                    if verb == "set_ptt" and args == ["1"]:
+                        time.sleep(self.server.key_byte_delay)
             else:
                 self.wfile.write(reply)
 

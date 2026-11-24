@@ -19,6 +19,7 @@ except ModuleNotFoundError:  # Python 3.10
 
 from .receiver import ReceiverSettings
 from .rig import RigSettings, usb_dial
+from .ham_tx import TxSettings
 
 
 DSC_FREQUENCIES = [2187500, 4207500, 6312000, 8414500, 12577000, 16804500]
@@ -44,8 +45,10 @@ class StationProfile:
     frequency_hz: float = 2187500
     presets_hz: list = field(default_factory=lambda: list(DSC_FREQUENCIES))
     position: dict = field(default_factory=dict)
+    tx: TxSettings = field(default_factory=TxSettings)
 
     def validate(self):
+        self.tx.validate()
         if not isinstance(self.radio, str) or len(self.radio) > 200:
             raise ValueError("Radio description must be at most 200 characters")
         self.rig.validate()
@@ -77,10 +80,11 @@ class StationProfile:
         data = dict(data)
         try:
             rig = RigSettings(**data.pop("rig", {}))
+            tx = TxSettings(**data.pop("tx", {}))
             audio = dict(data.pop("audio", {}))
             if audio.get("centre_hz") == "auto":
                 audio["centre_hz"] = None
-            profile = cls(rig=rig, audio=ReceiverSettings(**audio), **data)
+            profile = cls(rig=rig, tx=tx, audio=ReceiverSettings(**audio), **data)
             profile.validate()
             return profile
         except (TypeError, AttributeError) as exc:

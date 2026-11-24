@@ -3,6 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import asyncio
+import argparse
 from dataclasses import asdict
 
 from .profiles import DSC_FREQUENCIES, StationProfile
@@ -11,11 +12,12 @@ from .rig import RigSettings, list_models, usb_dial
 
 class RigPanel:
     def __init__(self, service, store, profile_name, get_audio, set_audio,
-                 get_position, set_position):
+                 get_position, set_position, get_tx=None, set_tx=None):
         from nicegui import ui
         self.service, self.store = service, store
         self.get_audio, self.set_audio = get_audio, set_audio
         self.get_position, self.set_position = get_position, set_position
+        self.get_tx, self.set_tx = get_tx, set_tx
         self.presets = list(DSC_FREQUENCIES)
         self.fields = {}
         profiles, _ = store.read()
@@ -43,7 +45,8 @@ class RigPanel:
             try:
                 profile = StationProfile(radio=self.radio.value, rig=self.settings(),
                     audio=get_audio(), frequency_hz=self.frequency.value * 1000,
-                    presets_hz=self.presets, position=get_position())
+                    presets_hz=self.presets, position=get_position(),
+                    tx=get_tx() if get_tx else initial.tx)
                 store.save(self.name.value.strip(), profile)
                 self.names.set_options(list(store.read()[0]), value=self.name.value.strip())
                 ui.notify("Station saved")
@@ -87,6 +90,8 @@ class RigPanel:
                     field("remote_id", "Marine Remote ID (decimal; optional)")
                     field("civ_address", "CI-V address (e.g. 0x88; optional)")
                     field("executable", "rigctld executable or full path")
+                    self.fields["allow_ptt"] = ui.checkbox("Enable CAT PTT (IC-7100 / dummy)",
+                                                          value=initial.rig.allow_ptt)
 
                     async def models():
                         try:
@@ -175,6 +180,8 @@ class RigPanel:
         self.frequency.set_value(profile.frequency_hz / 1000)
         self.set_audio(profile.audio)
         self.set_position(profile.position)
+        if self.set_tx:
+            self.set_tx(profile.tx)
 
     def preview(self):
         if not hasattr(self, "dial"):
@@ -183,7 +190,7 @@ class RigPanel:
             centre = self.get_audio().centre_hz
             dial = usb_dial(self.frequency.value * 1000, centre)
             self.dial.set_text(f"USB dial: {dial/1000:.3f} kHz · audio centre: {centre:g} Hz")
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, argparse.ArgumentTypeError):
             self.dial.set_text("Enter a DSC frequency and an explicit audio centre to tune.")
 
     def refresh(self, snapshot):
@@ -196,6 +203,9 @@ class RigPanel:
         self.connect_button.set_enabled(not connected and not busy)
         for button in (self.disconnect_button, self.read_button, self.tune_button):
             button.set_enabled(connected and not busy)
+        self.tune_button.set_enabled(connected and not busy and not snapshot["ptt_uncertain"])
+        # Disconnect retries release even if the original socket was lost.
+        self.disconnect_button.set_enabled((connected or snapshot["ptt_uncertain"]) and not busy)
         for widget in (self.connection, self.radio, *self.fields.values()):
             widget.set_enabled(not connected and not busy)
         self.load_button.set_enabled(not connected and not busy and snapshot["state"] not in ("Receiving", "Starting", "Stopping"))
