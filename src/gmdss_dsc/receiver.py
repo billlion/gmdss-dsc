@@ -296,6 +296,28 @@ class ReceiverService:
             with self._lock:
                 self._fix_pending = False
 
+    def _tx_block_reason(self):
+        """Explain shared station state using cached data only; never do I/O."""
+        if self._tx_active:
+            return "A transmission is in progress. Use Abort TX to stop it."
+        if self._rig.ptt_uncertain:
+            return "PTT off is unconfirmed. Stop the transmitter locally and disconnect to retry release."
+        if self._rig_busy:
+            return "Wait for the current radio operation to finish."
+        if self._fix_pending:
+            return "Wait for the current position read to finish."
+        if not self._rig_connected:
+            return "Connect a local IC-7100 or dummy radio with CAT PTT enabled."
+        settings = self._rig.settings
+        if settings is not None and settings.connection == "external":
+            return ("Use an existing rigctld supports reception only. Disconnect, stop the separate "
+                    "rigctld process, then select Start a local rigctld and enable CAT PTT before reconnecting.")
+        if settings is not None and settings.model not in (1, 3070):
+            return "CAT TX currently supports the IC-7100 (model 3070) or Hamlib dummy (model 1)."
+        if settings is None or not settings.allow_ptt:
+            return "CAT PTT is disabled. Disconnect, tick Enable CAT PTT in Radio connection, and reconnect."
+        return ""
+
     def snapshot(self):
         with self._lock:
             fix = self._fix.as_dict() if self._fix is not None else None
@@ -313,6 +335,7 @@ class ReceiverService:
                 tx_active=self._tx_active,
                 ptt_uncertain=self._rig.ptt_uncertain,
                 tx_available=bool(self._rig.settings and self._rig.settings.allow_ptt),
+                tx_block_reason=self._tx_block_reason(),
             ))
 
     def jsonl(self):

@@ -29,6 +29,7 @@ class TxPanel:
                 for name, label in (("output_channel", "Output channel"), ("level", "Audio level (0.001–1)"),
                                     ("lead_s", "PTT lead (seconds)"), ("tail_s", "PTT tail (seconds)")):
                     self.fields[name] = ui.number(label, value=getattr(initial, name)).classes("w-full")
+                ui.label("Output channel is within the selected audio device: usually 1 for mono/left or 2 for right. It is not the device number.").classes("dsc-muted")
             self.kind = ui.select({"test": "Test call", "position": "Position acknowledgement"},
                                   value="test", label="TX message").classes("w-full")
             self.source = ui.input("TX source address (9 digits)").classes("w-full")
@@ -54,6 +55,9 @@ class TxPanel:
                     ui.notify(str(exc), type="negative", timeout=10000)
                 self.refresh(service.snapshot(), get_audio)
 
+            self.request = request
+            self.readiness = ui.label().classes("whitespace-pre-line break-words w-full").props(
+                'role="status" aria-live="polite"')
             with ui.row().classes("w-full"):
                 self.send = ui.button("Transmit once", on_click=send, color="negative").props("no-caps")
                 self.abort = ui.button("Abort TX", on_click=service.abort_tx, color="negative").props("outline no-caps")
@@ -89,19 +93,24 @@ class TxPanel:
         busy = snapshot["rig_busy"]
         self.status.set_text(snapshot["tx_state"])
         self.error.set_text(snapshot["tx_error"])
-        ready = False
+        reasons = [snapshot["tx_block_reason"]] if snapshot["tx_block_reason"] else []
         try:
             settings = self.settings()
-            settings.validate(ready=True)
+            if self.frequency.value is None:
+                raise ValueError("Enter a TX DSC centre frequency in kHz")
             plan = check_allocation(self.frequency.value*1000, get_audio().centre_hz, settings.band_plan)
             self.preview.set_text(f"USB dial: {plan['dial_hz']/1000:.3f} kHz · "
                                   f"checked window to {plan['checked_window_hz'][1]/1000:.3f} kHz")
-            ready = True
         except (ValueError, TypeError, argparse.ArgumentTypeError) as exc:
             self.preview.set_text(str(exc) if self.frequency.value is not None else "Enter an amateur TX frequency.")
-        self.send.set_enabled(ready and snapshot["rig_connected"] and snapshot["tx_available"]
-                              and not busy and not snapshot["ptt_uncertain"])
-        self.abort.set_enabled(busy)
+        try:
+            self.request().validate()
+        except (ValueError, TypeError, argparse.ArgumentTypeError) as exc:
+            reasons.append(str(exc))
+        self.readiness.set_text("TX unavailable:\n" + "\n".join(reasons) if reasons else
+                                "Ready. Audio and radio checks run when you press Transmit once.")
+        self.send.set_enabled(not reasons)
+        self.abort.set_enabled(snapshot["tx_active"])
         self.result.set_enabled(snapshot["tx_result"] is not None)
         for widget in (*self.fields.values(), self.kind, self.source, self.destination, self.frequency, self.locator):
             widget.set_enabled(not busy)

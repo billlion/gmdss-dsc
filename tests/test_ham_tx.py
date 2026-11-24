@@ -45,6 +45,18 @@ class Playback:
 
 
 class AllocationTests(unittest.TestCase):
+    def test_form_validation_never_reads_position_or_generates_audio(self):
+        with patch("gmdss_dsc.ham_tx.get_fix") as fix, patch("gmdss_dsc.ham_tx.modulate") as audio:
+            plan = request(kind="position", locator="auto").validate()
+            self.assertEqual(plan["dial_hz"], 7100000)
+            fix.assert_not_called()
+            audio.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "leave it blank"):
+            request(locator="auto").validate()
+        with self.assertRaises(ValueError): request(source="").validate()
+        with self.assertRaises(ValueError): request(destination="123").validate()
+        with self.assertRaises(ValueError): request(locator="invalid").validate()
+
     def test_whole_usb_window_and_all_uk_allocation_edges(self):
         for low, high in UK_BANDS_HZ:
             for dial in (low, high-3000):
@@ -225,6 +237,22 @@ class TxCLITests(unittest.TestCase):
 
 
 class SharedStationTXTests(unittest.TestCase):
+    def test_readiness_explains_external_and_ptt_disabled_without_io(self):
+        with fake_server() as server:
+            service = ReceiverService()
+            try:
+                self.assertIn("Connect", service.snapshot()["tx_block_reason"])
+                service.radio("connect", settings=RigSettings(connection="external", port=server.server_address[1]))
+                commands = list(server.commands)
+                self.assertIn("existing rigctld supports reception only", service.snapshot()["tx_block_reason"])
+                service._rig.settings = replace(service._rig.settings, connection="managed", allow_ptt=False)
+                self.assertIn("CAT PTT is disabled", service.snapshot()["tx_block_reason"])
+                service._rig.settings = replace(service._rig.settings, allow_ptt=True)
+                self.assertEqual(service.snapshot()["tx_block_reason"], "")
+                self.assertEqual(commands, server.commands)
+            finally:
+                service.close()
+
     def test_rx_closes_before_key_and_restart_uses_new_frequency(self):
         receiving, stopped = Event(), Event()
         runs = []

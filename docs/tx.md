@@ -9,8 +9,9 @@ backends need separate verification of their TX frequency before enabling PTT.
 ## IC-7100 setup
 
 Vic has reported successful NMEA input, IC-7100 RX control and an audio test
-decoded by an IC-M803. The new automatic PTT sequence still needs his hardware
-test. His exact test frequency is awaiting clarification.
+decoded by an IC-M803. That bench test used an 8 MHz DSC channel with the
+IC-7100 feeding a dummy load; "6 m" referred to the M803's receiving antenna.
+The new automatic PTT sequence still needs his hardware test on an amateur frequency.
 
 1. Use the working radio serial port/baud/CI-V address in the saved `home`
    profile. Disconnect AirMail or any other program owning that serial port.
@@ -114,6 +115,36 @@ Radio and audio operations are serialized across browsers. Closing a browser
 does not cancel a burst: the server owns the bounded job. Use Abort TX to stop
 it. Server shutdown requests cancellation before closing the owned helper.
 The existing LAN access password applies to both RX and TX controls.
+
+### If Transmit once is greyed out
+
+The text immediately above the button now explains the blocking settings.
+In particular, a radio can show **Connected** and tune successfully while TX
+remains unavailable through **Use an existing rigctld**. For this first TX
+version:
+
+1. Click **Disconnect radio**. This closes our connection; it does not stop a
+   separately launched `rigctld`.
+2. Stop that separate `rigctld` process so it releases the radio's serial port.
+3. Select **Start a local rigctld** in **Radio connection**. For the IC-7100,
+   enter model **3070** and the serial port, baud and CI-V address that worked
+   previously. The radio description is just a label; "Hamlib dummy" there
+   does not identify the backend of an external daemon.
+4. Tick **Enable CAT PTT**, then **Connect radio**. If you were already
+   connected, disconnect before changing that setting.
+5. Select the UK TX plan, enter the callsign, radio output device, source and
+   destination addresses, and an amateur TX centre frequency. Save the station
+   to retain the connection and TX settings for next time.
+
+For **Test call**, the CW locator must be blank or explicit (for example,
+`IO70VH`). **auto** requires **Position acknowledgement**, which reads a fresh
+fix. These form errors are shown before the button becomes available.
+
+**Radio output device** is the sound device ID/name from **List output
+devices**. **Output channel** is a channel *within* that device: normally
+**1** for mono/left, or **2** for right on a stereo device. It is not another
+device ID. Channel availability is checked when opening the output, before
+PTT; the form does not repeatedly open/probe sound hardware while idle.
 
 ## Checks and limits
 

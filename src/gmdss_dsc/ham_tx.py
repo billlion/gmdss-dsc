@@ -101,7 +101,8 @@ class TxRequest:
     acknowledgement: bool = False
     position: dict = field(default_factory=dict)
 
-    def prepare(self, *, fix_reader=get_fix):
+    def validate(self):
+        """Check the form without opening GPS/audio/radio or synthesizing audio."""
         self.settings.validate(ready=True)
         plan = check_allocation(self.frequency_hz, self.centre_hz, self.settings.band_plan)
         if self.kind not in ("test", "position"):
@@ -109,9 +110,17 @@ class TxRequest:
         # Validate addresses and CW before attempting any position I/O.
         TestCall(self.source, self.destination).to_frame()
         auto = self.locator.lower() == "auto"
-        cw = identification(self.settings.callsign, None if auto else self.locator or None)
+        identification(self.settings.callsign, None if auto else self.locator or None)
         if auto and self.kind != "position":
-            raise ValueError("Automatic locator needs a position message")
+            raise ValueError("Automatic locator needs a position message; leave it blank or enter a locator for a test call")
+        if not math.isfinite(self.cw_wpm) or not 5 <= self.cw_wpm <= 60:
+            raise ValueError("CW speed must be between 5 and 60 words per minute")
+        return plan
+
+    def prepare(self, *, fix_reader=get_fix):
+        plan = self.validate()
+        auto = self.locator.lower() == "auto"
+        cw = identification(self.settings.callsign, None if auto else self.locator or None)
         position = POSITION_DEFAULTS | self.position
         fix = None
         if self.kind == "position":

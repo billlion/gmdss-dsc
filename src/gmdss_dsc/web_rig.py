@@ -124,6 +124,7 @@ class RigPanel:
                     field("host", "rigctld host")
                     field("port", "rigctld port", True)
                     ui.label("The existing daemon owns the radio model, serial port and address.").classes("dsc-muted")
+                    ui.label("This connection supports reception only. For TX, use Start a local rigctld with CAT PTT enabled.").classes("dsc-muted")
                     ui.label("Start it with -C cache_timeout=0 for fresh frequency readback.").classes("dsc-muted")
                 field("timeout_s", "Radio timeout (seconds)", True)
                 field("settle_s", "Settling time (seconds)", True)
