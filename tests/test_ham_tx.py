@@ -237,6 +237,52 @@ class TxCLITests(unittest.TestCase):
 
 
 class SharedStationTXTests(unittest.TestCase):
+    def test_pending_gps_does_not_block_test_call_and_position_tx_can_be_aborted(self):
+        entered, release, preparing = Event(), Event(), Event()
+        calls, errors = [], []
+        def reader(args):
+            calls.append(args.serial_port)
+            entered.set()
+            release.wait(5)
+            return PositionFix(50.3, -4.2, datetime.now(timezone.utc), "serial:RMC")
+        with fake_server() as server:
+            service = ReceiverService(rig=connect_fixture(server), fix_reader=reader,
+                tx_sender=lambda *a, **kw: transmit_once(*a, **kw, playback_factory=Playback))
+            settings = dict(position_source="serial", serial_port="COM7", position_timeout=3)
+            def send_position():
+                preparing.set()
+                try:
+                    service.transmit(request(kind="position", position=settings))
+                except Exception as exc:
+                    errors.append(exc)
+            sender = Thread(target=send_position)
+            try:
+                service.read_position(settings)
+                self.assertTrue(entered.wait(2))
+                # A test call contains no position and must not wait for GPS.
+                self.assertTrue(service.transmit(request())["ptt_off_confirmed"])
+                self.assertTrue(service.snapshot()["position_pending"])
+                sender.start()
+                self.assertTrue(preparing.wait(2))
+                deadline = time.monotonic() + 2
+                while not service.snapshot()["tx_active"] and time.monotonic() < deadline:
+                    Event().wait(0.01)
+                self.assertTrue(service.snapshot()["tx_active"])
+                service.abort_tx()
+                sender.join(2)
+                self.assertFalse(sender.is_alive())
+                self.assertEqual(calls, ["COM7"])
+                self.assertEqual(len(errors), 1)
+                self.assertIn("cancelled", str(errors[0]))
+                self.assertEqual(server.ptt, 0)
+                # Only the earlier test call keyed PTT, never the waiting TX.
+                self.assertEqual(server.commands.count("+\\set_ptt 1"), 1)
+            finally:
+                release.set()
+                if sender.ident is not None:
+                    sender.join(2)
+                service.close()
+
     def test_readiness_explains_external_and_ptt_disabled_without_io(self):
         with fake_server() as server:
             service = ReceiverService()

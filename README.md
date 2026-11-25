@@ -97,13 +97,22 @@ The first version provides:
 - A shared list of complete ECC-passing messages, full JSON details and JSONL
   download. Up to 200 messages and 100 activity entries are retained in memory;
   download the messages before stopping the server to preserve them.
-- One-shot position reads from manual coordinates, serial NMEA, gpsd or
-  Signal K. The **Position source** panel configures them; fix age and stale
-  status keep updating after a read. **Read position** fetches another fix.
+- Position reads from manual coordinates, serial NMEA, gpsd or Signal K.
+  In **Position source**, select the GPS source and tick **Update automatically**,
+  then click **Read position** to apply the settings and read immediately.
+  The default update interval is 10 seconds after each completed read, adjustable
+  from 1 to 3600 seconds. **Stop updates** disables further polling; an in-progress
+  read may take until its timeout to release the port. Manual fixes are one-shot
+  and never have their timestamps automatically renewed.
+  A failed read retains the source, COM port and last good fix, shows the error,
+  and retries at the same interval. Fix age continues increasing; old fixes are
+  marked **STALE**. Choose an interval shorter than the maximum fix age if you
+  want the displayed position to stay fresh between reads.
   These are the onboard computer's sources, not the phone's location.
 - Multiple simultaneous browsers. Reception starts only when requested and
-  continues if all browsers close, sleep or disconnect. Reopening the page
-  shows the current receiver and retained history. The computer/server must
+  continues if all browsers close, sleep or disconnect. Enabled GPS updates also
+  continue without viewers. Reopening the page shows the current receiver,
+  position-source settings and retained history. The computer/server must
   stay awake; Ctrl+C in its terminal stops the server and receiver.
 
 Position options can also initialise the form at launch, for example:
@@ -112,14 +121,25 @@ Position options can also initialise the form at launch, for example:
 dsc serve --host 0.0.0.0 --position-source signalk --signalk-url http://192.168.1.30:3000
 # Or: --position-source gpsd --gpsd-host 192.168.1.30
 # Or: --position-source serial --serial-port COM3 --baud 4800
+# Start automatic GPS updates immediately:
+dsc serve --position-source serial --serial-port COM3 --baud 4800 --position-auto-update --position-interval 10
 ```
 
 For an authenticated Signal K server, set `DSC_SIGNALK_TOKEN` in the server
 environment, as for the position CLI. **Save station** stores the audio,
-radio and position-source settings in a named profile for reuse after restart.
-Position fixes and decoded messages themselves remain in memory. The web
-interface is for reception and position checks; the existing encoding/playback
-commands remain in the CLI.
+radio and position-source settings, including automatic updates and their
+interval, in a named profile for reuse after restart. Loading a profile with
+automatic updates enabled starts GPS polling; it does not start reception or
+transmission. `dsc serve --no-position-auto-update` overrides a saved polling
+choice for that launch. Position fixes and decoded messages themselves remain
+in memory.
+
+GPS reads use a background worker shared by all browsers. Serial/network waits
+do not hold the GUI's state lock or run on the audio callback. Provider access
+is serialized with position-message TX, so it cannot open the same COM port
+twice. TX can use a fresh fix from the same settings, or read a new one; it still
+checks the fix's original timestamp before keying PTT. No special thread
+priorities are used.
 
 The UI uses the same decoder and JSON fields as `dsc listen`, adding a message
 `id` and `receiver_session` counter so capture segments from different
@@ -589,6 +609,7 @@ assert TestCall.from_frame(received.decoded.frame) == call
 - `modem.py`: continuous-phase FSK synthesis and offline tone-correlation decoding.
 - `live.py`: optional soundcard capture, overlapping decode windows and deduplication.
 - `position.py`: position providers, freshness checks and Maidenhead conversion.
+- `position_monitor.py`: shared background GPS polling and serialized TX reads.
 - `transmit.py`: CW identification and optional soundcard playback.
 - `ham_tx.py`: amateur allocation checks, one-shot messages and CAT PTT watchdog.
 - `web_tx.py`: explicit shared browser TX and abort controls.

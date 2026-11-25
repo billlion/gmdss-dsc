@@ -19,7 +19,8 @@ class ProfileTests(unittest.TestCase):
             custom = replace(home, radio='Bill’s "home" radio',
                 rig=replace(home.rig, executable=r"C:\Program Files\Hamlib\bin\rigctld.exe"),
                 audio=ReceiverSettings(device="USB Audio CODEC", centre_hz=None),
-                position=dict(position_source="gpsd", gpsd_host="localhost", gpsd_port=2948))
+                position=dict(position_source="gpsd", gpsd_host="localhost", gpsd_port=2948,
+                              position_auto_update=True, position_interval=120))
             store.save("home", custom)
             self.assertEqual(store.get("home"), custom)
             self.assertEqual(store.read()[1], "home")
@@ -36,7 +37,10 @@ class ProfileTests(unittest.TestCase):
             before = store.path.read_bytes()
             for profile in (StationProfile(rig=RigSettings(remote_id=100)),
                             StationProfile(frequency_hz=float("nan")),
-                            StationProfile(position={"signalk_token": "do not save secrets"})):
+                            StationProfile(position={"signalk_token": "do not save secrets"}),
+                            StationProfile(position={"position_auto_update": True}),
+                            StationProfile(position={"position_interval": float("nan")}),
+                            StationProfile(position={"position_auto_update": "false"})):
                 with self.assertRaises(ValueError):
                     store.save("bad", profile)
                 self.assertEqual(before, store.path.read_bytes())
