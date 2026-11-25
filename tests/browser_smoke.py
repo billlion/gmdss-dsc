@@ -107,6 +107,38 @@ def main():
                 phone.get_by_role("button", name="Read position", exact=True).click()
                 expect(phone.get_by_text("Manual fix · fresh", exact=True)).to_be_visible()
                 expect(phone.get_by_text("Manual fix · STALE", exact=True)).to_be_visible(timeout=10000)
+                # A failed GPS read keeps the source/port across a page reload;
+                # automatic retries and updates outlive every browser client.
+                phone.get_by_role("combobox", name="Source", exact=True).click()
+                phone.get_by_role("option", name="Serial NMEA", exact=True).click()
+                phone.get_by_label("Serial port (COM3, /dev/ttyUSB0, …)", exact=True).fill("COM-TEST")
+                phone.get_by_label("Update interval (seconds)", exact=True).fill("1")
+                phone.get_by_role("checkbox", name="Update automatically", exact=True).click()
+                expect(phone.get_by_role("checkbox", name="Update automatically", exact=True)).to_be_checked()
+                phone.get_by_role("button", name="Read position", exact=True).click()
+                expect(phone.get_by_text("Test GPS has no fix yet", exact=True)).to_be_visible()
+                phone.reload()
+                phone.get_by_text("Position source", exact=True).click()
+                expect(phone.get_by_role("combobox", name="Source", exact=True)).to_have_value("Serial NMEA")
+                expect(phone.get_by_label("Serial port (COM3, /dev/ttyUSB0, …)", exact=True)).to_have_value("COM-TEST")
+                expect(phone.get_by_role("checkbox", name="Update automatically", exact=True)).to_be_checked()
+                expect(phone.get_by_text("Position fix · fresh", exact=True)).to_be_visible(timeout=10000)
+                stamp = phone.get_by_text("serial:RMC", exact=False).inner_text().splitlines()[-1]
+                mobile.close()
+                time.sleep(2.2)
+                mobile = context(390)
+                phone = mobile.new_page()
+                phone.goto(url)
+                expect(phone.get_by_text("Position fix · fresh", exact=True)).to_be_visible()
+                assert phone.get_by_text("serial:RMC", exact=False).inner_text().splitlines()[-1] != stamp
+                phone.get_by_role("button", name="Stop updates", exact=True).click()
+                expect(phone.get_by_text("Automatic updates off", exact=True)).to_be_visible()
+                expect(phone.get_by_text("Position fix · STALE", exact=True)).to_be_visible(timeout=10000)
+                # Save automatic settings with the profile later in this test.
+                phone.get_by_text("Position source", exact=True).click()
+                phone.get_by_role("checkbox", name="Update automatically", exact=True).click()
+                expect(phone.get_by_role("checkbox", name="Update automatically", exact=True)).to_be_checked()
+                phone.get_by_role("button", name="Read position", exact=True).click()
                 phone.get_by_role("button", name="Start reception", exact=True).click()
                 expect(phone.get_by_text("2 decoded", exact=True)).to_be_visible(timeout=20000)
                 phone.get_by_role("button", name="Stop", exact=True).click()
@@ -190,6 +222,8 @@ def main():
                 phone.reload()
                 expect(phone.get_by_label("DSC frequency (kHz)", exact=True)).to_have_value("8414.500")
                 expect(phone.get_by_role("combobox", name="Saved station", exact=True)).to_have_value("saved-test")
+                expect(phone.get_by_text("Automatic updates · every 1 s after each read", exact=False)).to_be_visible()
+                expect(phone.get_by_text("Position fix · fresh", exact=True)).to_be_visible()
                 screenshot_dir = os.environ.get("DSC_SCREENSHOT_DIR")
                 if screenshot_dir:
                     expect(phone.get_by_label("Latitude (north positive)", exact=True)).to_be_hidden()
@@ -202,7 +236,7 @@ def main():
                 assert not errors, errors
                 assert not external, external
                 browser.close()
-            print("Browser smoke passed: authentication, decode, JSON, shared state, reconnect, position, rig tune/readback, retune while receiving, TX disabled reasons/external daemon/PTT opt-in/locator validation/completion/abort, profiles, phone layout, offline assets.")
+            print("Browser smoke passed: authentication, decode, JSON, shared state, reconnect, GPS retry/port retention/automatic updates without viewers/stop/stale/profile restoration, rig tune/readback, retune while receiving, TX disabled reasons/external daemon/PTT opt-in/locator validation/completion/abort, profiles, phone layout, offline assets.")
         except Exception:
             log.seek(0)
             print(log.read())

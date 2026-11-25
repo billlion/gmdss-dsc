@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from .calls import TestCall, PositionReport
 from .framing import encode_frame
 from .modem import modulate
-from .position import get_fix, maidenhead
+from .position import POSITION_DEFAULTS, get_fix, maidenhead
 from .rig import RigError, usb_dial
 from .transmit import identification, with_identification, PreparedPlayback
 
@@ -81,11 +81,6 @@ def check_allocation(frequency_hz, centre_hz, band_plan, *, dial_hz=None):
                          f"{(dial+TX_WINDOW_HZ)/1000:.3f} kHz is outside a UK amateur allocation")
     return dict(frequency_hz=frequency_hz, dial_hz=dial, mode="USB",
                 centre_hz=centre_hz, checked_window_hz=[dial, dial + TX_WINDOW_HZ], band_plan=band_plan)
-
-
-POSITION_DEFAULTS = dict(position_source="manual", latitude=None, longitude=None, position_time=None,
-    serial_port=None, baud=4800, gpsd_host="localhost", gpsd_port=2947,
-    signalk_url="http://localhost:3000", position_timeout=10.0, max_fix_age=30.0)
 
 
 @dataclass(frozen=True)

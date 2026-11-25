@@ -270,6 +270,10 @@ def main(argv=None):
     server.add_argument("--port", type=int, default=8080)
     profile_arguments(server)
     position_arguments(server, suppress_defaults=True)
+    server.add_argument("--position-auto-update", action=argparse.BooleanOptionalAction,
+                        default=argparse.SUPPRESS, help="Keep GPS position updated in the background")
+    server.add_argument("--position-interval", type=float, default=argparse.SUPPRESS,
+                        help="Seconds between completed GPS reads (default: 10; range: 1–3600)")
     args = parser.parse_args(argv)
     try:
         if args.command in ("transmit-test", "transmit-position"):

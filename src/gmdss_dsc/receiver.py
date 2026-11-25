@@ -9,10 +9,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from threading import Event, Lock, Thread
-from types import SimpleNamespace
 
 from .live import WindowDecoder, listen
 from .position import get_fix
+from .position_monitor import PositionMonitor
 from .records import result_dict
 from .rig import RigController, usb_dial
 from .ham_tx import transmit_once
@@ -39,7 +39,7 @@ class ReceiverService:
     def __init__(self, *, listener=listen, fix_reader=get_fix, history_size=200, rig=None,
                  settings=None, tx_sender=transmit_once):
         self._listen = listener
-        self._get_fix = fix_reader
+        self.position = PositionMonitor(fix_reader)
         self._tx_sender = tx_sender
         self._lock = Lock()
         self._control_lock = Lock()
@@ -51,7 +51,6 @@ class ReceiverService:
         self._station = None
         self._stop = Event()
         self._thread = None
-        self._position_thread = None
         self._closed = False
         self._state = "Stopped"
         self._error = ""
@@ -60,10 +59,6 @@ class ReceiverService:
         self._count = 0
         self._messages = deque(maxlen=history_size)
         self._events = deque(maxlen=100)
-        self._fix = None
-        self._fix_error = ""
-        self._fix_limit = 30.0
-        self._fix_pending = False
         self._tx_cancel = Event()
         self._tx_state = "Idle"
         self._tx_error = ""
@@ -120,9 +115,10 @@ class ReceiverService:
         with self._operation(), self._lock:
             if self._rig_connected or (self._thread and self._thread.is_alive()):
                 raise ValueError("Stop reception and disconnect the radio before loading a profile")
-            self._settings = settings
             if station is not None:
+                self.position.configure(station["profile"]["position"])
                 self._station = deepcopy(station)
+            self._settings = settings
 
     def radio(self, action, *, settings=None, frequency_hz=None, centre_hz=None):
         """Run on a worker thread, never NiceGUI's event loop.
@@ -187,8 +183,6 @@ class ReceiverService:
             with self._lock:
                 if self._closed:
                     raise ValueError("Server is shutting down")
-                if self._fix_pending:
-                    raise ValueError("Wait for the current position read to finish")
                 self._tx_cancel.clear()
                 self._tx_state, self._tx_error, self._tx_result = "Preparing", "", None
                 self._tx_active = True
@@ -202,7 +196,8 @@ class ReceiverService:
                         raise ValueError("Receiver is still stopping; transmission cancelled")
                 with self._lock:
                     self._rig_state = None
-                message = request.prepare(fix_reader=self._get_fix)
+                message = request.prepare(fix_reader=lambda args:
+                    self.position.read_for_tx(args, self._tx_cancel))
                 result = self._tx_sender(self._rig, message, cancel=self._tx_cancel,
                                         progress=self._tx_progress)
                 with self._lock:
@@ -264,37 +259,7 @@ class ReceiverService:
                 self._stop.set()
 
     def read_position(self, settings):
-        # A single shared operation: a second viewer cannot open the same GPS.
-        settings = deepcopy(settings)
-        timeout = float(settings["position_timeout"])
-        max_age = float(settings["max_fix_age"])
-        if not 0 < timeout <= 30 or not 0 < max_age <= 86400:
-            raise ValueError("Use a position timeout of 0–30 s and a maximum age of 0–86400 s")
-        with self._lock:
-            if self._closed:
-                raise ValueError("Server is shutting down")
-            if self._rig_busy:
-                raise ValueError("Wait for the current radio operation to finish")
-            if self._position_thread is not None and self._position_thread.is_alive():
-                raise ValueError("A position read is already in progress")
-            self._fix, self._fix_error = None, ""
-            self._fix_limit, self._fix_pending = max_age, True
-            self._position_thread = Thread(target=self._read_position,
-                                           args=(settings,), name="dsc-position", daemon=True)
-            self._position_thread.start()
-
-    def _read_position(self, settings):
-        try:
-            fix = self._get_fix(SimpleNamespace(**settings))
-        except Exception as exc:
-            with self._lock:
-                self._fix_error = str(exc)
-        else:
-            with self._lock:
-                self._fix = fix
-        finally:
-            with self._lock:
-                self._fix_pending = False
+        self.position.configure(settings, read_now=True)
 
     def _tx_block_reason(self):
         """Explain shared station state using cached data only; never do I/O."""
@@ -304,8 +269,6 @@ class ReceiverService:
             return "PTT off is unconfirmed. Stop the transmitter locally and disconnect to retry release."
         if self._rig_busy:
             return "Wait for the current radio operation to finish."
-        if self._fix_pending:
-            return "Wait for the current position read to finish."
         if not self._rig_connected:
             return "Connect a local IC-7100 or dummy radio with CAT PTT enabled."
         settings = self._rig.settings
@@ -320,14 +283,10 @@ class ReceiverService:
 
     def snapshot(self):
         with self._lock:
-            fix = self._fix.as_dict() if self._fix is not None else None
-            if fix is not None:
-                fix["fresh"] = -5 <= fix["age_s"] <= self._fix_limit
             return deepcopy(dict(
                 state=self._state, error=self._error, settings=asdict(self._settings),
                 count=self._count, messages=list(self._messages), events=list(self._events),
-                position=fix, position_pending=self._fix_pending,
-                position_error=self._fix_error,
+                **self.position.snapshot(),
                 rig=self._rig_state, rig_connected=self._rig_connected,
                 rig_busy=self._rig_busy, rig_error=self._rig_error,
                 station=self._station,
@@ -347,6 +306,7 @@ class ReceiverService:
             self._closed = True
         self.abort_tx()
         self._stop_capture()
+        self.position.close(timeout=timeout)
         if self._thread is not None:
             self._thread.join(timeout=timeout)
         # A radio operation has bounded I/O deadlines; it sees _closed before
@@ -356,5 +316,3 @@ class ReceiverService:
             with self._lock:
                 self._rig_connected = False
                 self._rig_state = None
-        # Position I/O has its own deadline and never owns the audio device.
-        # It is a daemon so a failed DNS/driver call cannot prevent process exit.

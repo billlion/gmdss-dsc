@@ -37,7 +37,7 @@ class TxPanel:
             self.frequency = ui.number("TX DSC centre (kHz)", value=None, format="%.3f").classes("w-full")
             self.locator = ui.input("TX CW locator (optional; auto for position)").classes("w-full")
             self.preview = ui.label("Enter an amateur frequency; the RX preset is not used.").classes("dsc-muted")
-            ui.label("Position messages read a fresh fix using Own position settings. Transmission stays on the selected amateur frequency.").classes("dsc-muted")
+            ui.label("Position messages use a fresh fix from Own position settings, reading one if needed. Transmission stays on the selected amateur frequency.").classes("dsc-muted")
 
             def request():
                 if self.frequency.value is None:

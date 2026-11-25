@@ -12,7 +12,8 @@ from .cli import centre_argument, device_argument, position_arguments
 from .live import AudioInputError, list_devices
 from .receiver import ReceiverService, ReceiverSettings
 from .web_access import AccessGuard, access_password
-from .profiles import ProfileStore, StationProfile
+from .profiles import POSITION_KEYS, ProfileStore, StationProfile
+from .position_monitor import UPDATE_DEFAULTS
 from .web_rig import RigPanel
 from .web_tx import TxPanel
 
@@ -25,6 +26,8 @@ def build_page(service, position_defaults, store=None, profile_name=None):
         defaults = argparse.ArgumentParser()
         position_arguments(defaults)
         position_defaults = vars(defaults.parse_args([])) | station["profile"]["position"]
+    position_defaults = UPDATE_DEFAULTS | position_defaults
+    position_defaults.update(service.snapshot()["position_settings"] or {})
 
     ui.colors(primary="#153f50", secondary="#be891d", positive="#267663", negative="#aa3944")
     ui.add_css("""
@@ -138,6 +141,8 @@ def build_page(service, position_defaults, store=None, profile_name=None):
                     ui.label("Own position").classes("dsc-title")
                     position_status = ui.label("No fix read").classes("font-semibold")
                     position_text = ui.label().classes("dsc-muted whitespace-pre-line")
+                    position_error = ui.label().classes("text-red-800 break-words w-full")
+                    update_status = ui.label().classes("dsc-muted")
                     with ui.expansion("Position source", icon="settings").classes("w-full"):
                         source = ui.select({"manual": "Manual", "serial": "Serial NMEA",
                                             "gpsd": "gpsd", "signalk": "Signal K"},
@@ -162,10 +167,14 @@ def build_page(service, position_defaults, store=None, profile_name=None):
                             field("signalk_url", "Signal K server URL")
                         field("position_timeout", "Read timeout (seconds)", True)
                         field("max_fix_age", "Maximum fix age (seconds)", True)
+                        auto_update = ui.checkbox("Update automatically", value=position_defaults["position_auto_update"])
+                        field("position_interval", "Update interval (seconds)", True)
+                        ui.label("Automatic updates need serial NMEA, gpsd or Signal K. Manual fixes keep their original time.").classes("dsc-muted")
 
                     def position_settings():
                         settings = {k: v.value for k, v in fields.items()}
                         settings["position_source"] = source.value
+                        settings["position_auto_update"] = auto_update.value
                         if source.value != "manual":
                             for key in ("latitude", "longitude", "position_time"):
                                 settings[key] = None
@@ -179,8 +188,9 @@ def build_page(service, position_defaults, store=None, profile_name=None):
                     def set_position(values):
                         defaults = argparse.ArgumentParser()
                         position_arguments(defaults)
-                        settings = vars(defaults.parse_args([])) | values
+                        settings = vars(defaults.parse_args([])) | UPDATE_DEFAULTS | values
                         source.set_value(settings["position_source"])
+                        auto_update.set_value(settings["position_auto_update"])
                         for key, widget in fields.items():
                             widget.set_value(settings[key])
 
@@ -192,7 +202,8 @@ def build_page(service, position_defaults, store=None, profile_name=None):
                         refresh()
 
                     position_button = ui.button("Read position", on_click=read_position).props("outline no-caps")
-                    ui.label("Reads one fix on the server. The displayed fix ages until you read again.").classes("dsc-muted")
+                    stop_updates_button = ui.button("Stop updates", on_click=service.position.stop_updates).props("flat no-caps")
+                    ui.label("Read position applies these settings. Automatic updates continue when this page closes. Save station to restore them after restart.").classes("dsc-muted")
 
             with ui.column().classes("w-full gap-4 min-w-0"):
                 with ui.card().classes("dsc-card"):
@@ -239,9 +250,10 @@ def build_page(service, position_defaults, store=None, profile_name=None):
                     activity = ui.label().classes("dsc-detail text-xs w-full")
 
     last_count = None
+    position_revision = service.snapshot()["position_revision"]
 
     def refresh():
-        nonlocal last_count
+        nonlocal last_count, position_revision
         snapshot = service.snapshot()
         state = snapshot["state"]
         status.set_text("TX active" if snapshot["tx_active"] else
@@ -278,18 +290,25 @@ def build_page(service, position_defaults, store=None, profile_name=None):
             last_count = snapshot["count"]
         activity.set_text("\n".join(snapshot["events"]) or "No receiver activity yet.")
         position_button.set_enabled(not snapshot["position_pending"] and not snapshot["rig_busy"])
+        if snapshot["position_revision"] != position_revision:
+            set_position(snapshot["position_settings"])
+            position_revision = snapshot["position_revision"]
+        applied = snapshot["position_settings"] or {}
+        automatic = applied.get("position_auto_update", False)
+        stop_updates_button.set_enabled(automatic)
+        update_status.set_text((f"Automatic updates · every {applied['position_interval']:g} s after each read" if automatic
+                                else "Automatic updates off") + (" · reading…" if snapshot["position_pending"] else ""))
+        position_error.set_text(snapshot["position_error"])
         fix = snapshot["position"]
-        if snapshot["position_pending"]:
-            position_status.set_text("Reading position…")
-            position_text.set_text("")
-        elif fix:
+        if fix:
             position_status.set_text(("Manual fix" if fix["source"] == "manual" else "Position fix") +
                                      (" · fresh" if fix["fresh"] else " · STALE"))
             position_text.set_text(f"{fix['latitude']:.5f}, {fix['longitude']:.5f} · {fix['locator']}\n"
                                    f"{fix['source']} · {max(0, fix['age_s']):.0f} s old\n{fix['time_utc']}")
         else:
-            position_status.set_text("No usable fix" if snapshot["position_error"] else "No fix read")
-            position_text.set_text(snapshot["position_error"])
+            position_status.set_text("Reading position…" if snapshot["position_pending"] else
+                                     "No usable fix" if snapshot["position_error"] else "No fix read")
+            position_text.set_text("")
 
     refresh()
     ui.timer(0.5, refresh)
@@ -301,10 +320,10 @@ def configure_app(service, position_defaults, password, store=None, profile_name
     if profile_name:
         profile = store.get(profile_name)
         saved = profile.to_dict()
-        saved["position"] = {k: v for k, v in position_defaults.items() if k in (
-            "position_source", "latitude", "longitude", "position_time", "serial_port", "baud",
-            "gpsd_host", "gpsd_port", "signalk_url", "position_timeout", "max_fix_age")}
+        saved["position"] = {k: v for k, v in position_defaults.items() if k in POSITION_KEYS}
         service.configure(profile.audio, station=dict(name=profile_name, profile=saved))
+    else:
+        service.position.configure({k: v for k, v in position_defaults.items() if k in POSITION_KEYS})
 
     @ui.page("/")
     def index():
@@ -335,7 +354,7 @@ def serve(args):
     profile = store.get(name) if name else None
     defaults = argparse.ArgumentParser()
     position_arguments(defaults)
-    position_defaults = vars(defaults.parse_args([]))
+    position_defaults = vars(defaults.parse_args([])) | UPDATE_DEFAULTS
     if profile:
         position_defaults.update(profile.position)
     position_defaults.update({k: v for k, v in vars(args).items() if k in position_defaults})

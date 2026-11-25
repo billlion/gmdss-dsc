@@ -17,6 +17,10 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 UTC = timezone.utc
 
+POSITION_DEFAULTS = dict(position_source="manual", latitude=None, longitude=None, position_time=None,
+    serial_port=None, baud=4800, gpsd_host="localhost", gpsd_port=2947,
+    signalk_url="http://localhost:3000", position_timeout=10.0, max_fix_age=30.0)
+
 
 class PositionError(ValueError):
     """No usable position is available from the selected source."""

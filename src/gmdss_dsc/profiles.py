@@ -20,11 +20,12 @@ except ModuleNotFoundError:  # Python 3.10
 from .receiver import ReceiverSettings
 from .rig import RigSettings, usb_dial
 from .ham_tx import TxSettings
+from .position import POSITION_DEFAULTS
+from .position_monitor import UPDATE_DEFAULTS, position_settings
 
 
 DSC_FREQUENCIES = [2187500, 4207500, 6312000, 8414500, 12577000, 16804500]
-POSITION_KEYS = {"position_source", "latitude", "longitude", "position_time", "serial_port",
-                 "baud", "gpsd_host", "gpsd_port", "signalk_url", "position_timeout", "max_fix_age"}
+POSITION_KEYS = POSITION_DEFAULTS.keys() | UPDATE_DEFAULTS.keys()
 
 
 def config_path():
@@ -63,10 +64,13 @@ class StationProfile:
         if not isinstance(self.position, dict) or self.position.keys() - POSITION_KEYS:
             raise ValueError("Unknown position setting in profile")
         for key, value in self.position.items():
+            if key == "position_auto_update" and type(value) is bool:
+                continue
             if value is not None and type(value) not in (str, int, float):
                 raise ValueError(f"Invalid position setting: {key}")
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError(f"Non-finite position setting: {key}")
+        position_settings(self.position)
 
     def to_dict(self):
         data = asdict(self)

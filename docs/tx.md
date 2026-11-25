@@ -97,6 +97,13 @@ automatically repeated.
 
 ## Browser
 
+Automatic GPS updates in **Own position** can run alongside RX and TX. Position
+messages use a matching fresh cached fix when available, otherwise read a new
+one. Background polling and TX share exclusive access to the provider, including
+serial COM ports. A stale fix is never accepted merely because it was cached:
+its original timestamp is checked again before PTT. Test calls do not wait for
+GPS. Updating the position does not itself transmit anything.
+
 In **Radio connection**, enable **CAT PTT** before connecting the IC-7100.
 In **Amateur transmission**, select the UK allocation plan and enter the
 callsign, output device, source, destination and **TX DSC centre**. Use

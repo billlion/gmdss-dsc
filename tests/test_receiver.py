@@ -123,25 +123,32 @@ class ReceiverTests(unittest.TestCase):
                    centre_hz=975, interval_s=10, stop_event=stop)
         self.assertEqual(len(emitted), 1)
 
-    def test_shared_position_ages_and_new_failure_clears_old_fix(self):
+    def test_shared_position_ages_and_new_failure_keeps_old_fix(self):
         now = datetime.now(timezone.utc)
         fix = PositionFix(50.3, -4.2, now, "manual")
-        service = ReceiverService(fix_reader=lambda _: fix)
+        failures = []
+        def reader(_):
+            if failures:
+                raise ValueError("No valid fix")
+            return fix
+        service = ReceiverService(fix_reader=reader)
         self.addCleanup(service.close)
         settings = dict(position_timeout=1, max_fix_age=30)
         service.read_position(settings)
-        service._position_thread.join(2)
+        with service.position._condition:
+            self.assertTrue(service.position._condition.wait_for(
+                lambda: not service.snapshot()["position_pending"], timeout=2))
         self.assertTrue(service.snapshot()["position"]["fresh"])
         with patch("gmdss_dsc.position.datetime") as clock:
             clock.now.return_value = now + timedelta(seconds=31)
             self.assertFalse(service.snapshot()["position"]["fresh"])
-        def failure(_):
-            raise ValueError("No valid fix")
-        service._get_fix = failure
+        failures.append(True)
         service.read_position(settings)
-        service._position_thread.join(2)
+        with service.position._condition:
+            self.assertTrue(service.position._condition.wait_for(
+                lambda: not service.snapshot()["position_pending"], timeout=2))
         snapshot = service.snapshot()
-        self.assertIsNone(snapshot["position"])
+        self.assertEqual(snapshot["position"]["time_utc"], fix.as_dict()["time_utc"])
         self.assertEqual(snapshot["position_error"], "No valid fix")
 
     def test_one_pending_position_read(self):
@@ -159,7 +166,7 @@ class ReceiverTests(unittest.TestCase):
                 service.read_position(dict(position_timeout=1, max_fix_age=30))
         finally:
             release.set()
-            service._position_thread.join(2)
+            service.close()
 
     def test_tuning_flushes_old_frequency_then_restarts_with_new_metadata(self):
         entries = [Event(), Event()]

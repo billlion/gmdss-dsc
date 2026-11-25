@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 import tempfile
 from dataclasses import replace
+from datetime import datetime, timezone
 
 from nicegui import ui
 from scipy.signal import resample_poly
@@ -16,6 +17,7 @@ from gmdss_dsc.web import configure_app
 from gmdss_dsc.profiles import ProfileStore, StationProfile
 from gmdss_dsc.rig import RigSettings, RigController
 from gmdss_dsc.ham_tx import TxSettings, transmit_once
+from gmdss_dsc.position import PositionError, PositionFix, get_fix
 from fake_rigctld import fake_server
 
 
@@ -49,7 +51,15 @@ if __name__ == "__main__":
             def __enter__(self): return self
             def __exit__(self, *args): pass
             def play(self, cancel): cancel.wait(1.5)
-        service = ReceiverService(rig=FixtureRig(), tx_sender=lambda *a, **kw:
+        gps_reads = []
+        def position_reader(args):
+            if args.position_source == "serial" and args.serial_port == "COM-TEST":
+                gps_reads.append(True)
+                if len(gps_reads) == 1:
+                    raise PositionError("Test GPS has no fix yet")
+                return PositionFix(50.3, -4.2, datetime.now(timezone.utc), "serial:RMC")
+            return get_fix(args)
+        service = ReceiverService(rig=FixtureRig(), fix_reader=position_reader, tx_sender=lambda *a, **kw:
                                   transmit_once(*a, **kw, playback_factory=SilentOutput))
         store = ProfileStore(Path(tmp)/"stations.toml")
         store.save("test", StationProfile(radio="Browser test rig", rig=RigSettings(allow_ptt=True, settle_s=0),
