@@ -2,6 +2,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from gmdss_dsc.rig import RigController, RigError, RigSettings, usb_dial
@@ -9,6 +10,42 @@ from fake_rigctld import fake_server
 
 
 class RigTests(unittest.TestCase):
+    def test_serial_ptt_routes_separate_or_shared_port_and_rx_keeps_line_off(self):
+        settings = RigSettings(model=3009, device="COM4", civ_address=0x48,
+                               allow_ptt=True, ptt_method="RTS", ptt_device="COM7")
+        for method in ("RTS", "DTR"):
+            for device in ("COM7", "", "COM4"):
+                selected = replace(settings, ptt_method=method, ptt_device=device)
+                command = selected.command(40123)
+                self.assertEqual(command[command.index("-r") + 1], "COM4")
+                self.assertEqual(command[command.index("-p") + 1], device or "COM4")
+                self.assertEqual(command[command.index("-P") + 1], method)
+                config = command[command.index("-C") + 1]
+                self.assertIn("serial_handshake=None", config)
+                self.assertIn("ptt_share=0", config)
+                self.assertNotIn("_state=", config)
+                rx_command = replace(selected, allow_ptt=False).command(40123)
+                self.assertEqual(rx_command[rx_command.index("-P") + 1], "NONE")
+                self.assertNotIn("-p", rx_command)
+                rx_config = rx_command[rx_command.index("-C") + 1]
+                if device in ("", "COM4"):
+                    self.assertIn(f"{method.lower()}_state=OFF", rx_config)
+                else:
+                    self.assertNotIn("_state=", rx_config)
+        # An old profile keeps the existing CAT path without new options.
+        cat = RigSettings(model=3070, device="COM5", allow_ptt=True).command(40123)
+        self.assertEqual(cat[cat.index("-P") + 1], "RIG")
+        self.assertNotIn("-p", cat)
+
+    def test_invalid_ptt_method_port_or_706_cat_rejected_before_launch(self):
+        for settings in (RigSettings(ptt_method="VOX"), RigSettings(ptt_device="COM7\n"),
+                         RigSettings(ptt_device=None),
+                         RigSettings(model=3009, device="COM4", allow_ptt=True),
+                         RigSettings(allow_ptt=True, ptt_method="RTS"),
+                         RigSettings(model=30002, device="COM4", allow_ptt=True, ptt_method="RTS")):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                settings.command(40123)
+
     def settings(self, server):
         return RigSettings(connection="external", port=server.server_address[1], settle_s=0, timeout_s=0.3)
 

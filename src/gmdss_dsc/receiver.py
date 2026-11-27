@@ -307,16 +307,12 @@ class ReceiverService:
         if self._fix_pending:
             return "Wait for the current position read to finish."
         if not self._rig_connected:
-            return "Connect a local IC-7100 or dummy radio with CAT PTT enabled."
+            return "Connect a local IC-706, IC-7100 or dummy radio with PTT enabled."
         settings = self._rig.settings
         if settings is not None and settings.connection == "external":
             return ("Use an existing rigctld supports reception only. Disconnect, stop the separate "
-                    "rigctld process, then select Start a local rigctld and enable CAT PTT before reconnecting.")
-        if settings is not None and settings.model not in (1, 3070):
-            return "CAT TX currently supports the IC-7100 (model 3070) or Hamlib dummy (model 1)."
-        if settings is None or not settings.allow_ptt:
-            return "CAT PTT is disabled. Disconnect, tick Enable CAT PTT in Radio connection, and reconnect."
-        return ""
+                    "rigctld process, then select Start a local rigctld and enable PTT before reconnecting.")
+        return settings.tx_error() if settings is not None else "Connect a supported radio with PTT enabled."
 
     def snapshot(self):
         with self._lock:

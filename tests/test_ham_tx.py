@@ -93,6 +93,70 @@ class AllocationTests(unittest.TestCase):
 
 
 class TxSequenceTests(unittest.TestCase):
+    def test_original_706_serial_ptt_commands_simplex_and_reports_line_status(self):
+        for method in ("RTS", "DTR"):
+            with self.subTest(method=method), fake_server() as server:
+                rig = connect_fixture(server, model=3009)
+                rig.settings = replace(rig.settings, ptt_method=method, ptt_device="COM7")
+                server.split, server.shift = 1, "+"
+                # An old 706 does not provide these readbacks.
+                server.fail = "get_split_vfo"
+                progress = []
+                try:
+                    result = transmit_once(rig, request().prepare(), progress=progress.append,
+                                           playback_factory=Playback)
+                    self.assertEqual((server.split, server.shift, server.ptt), (0, "None", 0))
+                    self.assertEqual(result["ptt_method"], method)
+                    self.assertEqual(result["ptt_confirmation"], "serial_control_line")
+                    self.assertEqual(result["rig"]["simplex_check"], "commands_acknowledged")
+                    self.assertEqual(progress[-1], "Complete; Hamlib reports PTT line off")
+                    self.assertEqual(server.commands.count("+\\set_split_vfo 0 VFOA"), 2)
+                    self.assertEqual(server.commands.count("+\\set_rptr_shift None"), 2)
+                    self.assertNotIn("+\\get_func VOX", server.commands)
+                    self.assertNotIn("+\\get_split_vfo", server.commands)
+                finally:
+                    rig.close()
+
+    def test_706_failed_setup_or_bad_readback_never_keys(self):
+        for failed in ("set_vfo", "set_split_vfo", "set_rptr_shift", "get_freq", "get_mode"):
+            with self.subTest(failed=failed), fake_server() as server:
+                rig = connect_fixture(server, model=3009)
+                rig.settings = replace(rig.settings, ptt_method="RTS", ptt_device="COM7")
+                server.fail = failed
+                try:
+                    with self.assertRaises(RigError):
+                        transmit_once(rig, request().prepare(), playback_factory=Playback)
+                    self.assertNotIn("+\\set_ptt 1", server.commands)
+                finally:
+                    rig.close()
+
+    def test_serial_ptt_lost_key_reply_recovers_off_and_failed_release_remains_uncertain(self):
+        for method in ("RTS", "DTR"):
+            with self.subTest(method=method), fake_server() as server:
+                rig = connect_fixture(server, model=3009)
+                rig.settings = replace(rig.settings, ptt_method=method, ptt_device="COM7")
+                server.lose_key_reply = True
+                try:
+                    with self.assertRaises(RigError):
+                        transmit_once(rig, request().prepare(), playback_factory=Playback)
+                    self.assertEqual(server.ptt, 0)
+                    self.assertFalse(rig.ptt_uncertain)
+                    self.assertEqual(server.commands.count("+\\set_ptt 1"), 1)
+                finally:
+                    rig.close()
+            with fake_server() as server:
+                rig = connect_fixture(server, model=3009)
+                rig.settings = replace(rig.settings, ptt_method=method, ptt_device="COM7")
+                server.refuse_release = True
+                try:
+                    with self.assertRaisesRegex(RigError, "PTT OFF UNCONFIRMED"):
+                        transmit_once(rig, request().prepare(), playback_factory=Playback)
+                    self.assertTrue(rig.ptt_uncertain)
+                    self.assertEqual(server.ptt, 1)
+                finally:
+                    server.refuse_release = False
+                    rig.close()
+
     def run_fixture(self, callback):
         with fake_server() as server:
             rig = connect_fixture(server)
@@ -246,7 +310,7 @@ class SharedStationTXTests(unittest.TestCase):
                 commands = list(server.commands)
                 self.assertIn("existing rigctld supports reception only", service.snapshot()["tx_block_reason"])
                 service._rig.settings = replace(service._rig.settings, connection="managed", allow_ptt=False)
-                self.assertIn("CAT PTT is disabled", service.snapshot()["tx_block_reason"])
+                self.assertIn("PTT is disabled", service.snapshot()["tx_block_reason"])
                 service._rig.settings = replace(service._rig.settings, allow_ptt=True)
                 self.assertEqual(service.snapshot()["tx_block_reason"], "")
                 self.assertEqual(commands, server.commands)

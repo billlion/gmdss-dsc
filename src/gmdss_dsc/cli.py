@@ -215,7 +215,7 @@ def main(argv=None):
     encoder_arguments(report)
     position_arguments(report)
     for kind in ("test", "position"):
-        tx = commands.add_parser("transmit-" + kind, help="Send one amateur CW + DSC burst using CAT PTT")
+        tx = commands.add_parser("transmit-" + kind, help="Send one amateur CW + DSC burst with Hamlib PTT")
         profile_arguments(tx)
         tx.add_argument("--frequency-khz", required=True, type=float, help="DSC RF centre, NOT the USB dial")
         tx.add_argument("--source", required=True)

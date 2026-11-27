@@ -17,7 +17,8 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(home.rig.civ_address, 0x88)
             self.assertEqual(store.get("tui").rig.remote_id, 11)
             custom = replace(home, radio='Bill’s "home" radio',
-                rig=replace(home.rig, executable=r"C:\Program Files\Hamlib\bin\rigctld.exe"),
+                rig=replace(home.rig, executable=r"C:\Program Files\Hamlib\bin\rigctld.exe",
+                            ptt_method="RTS", ptt_device="COM7", allow_ptt=True),
                 audio=ReceiverSettings(device="USB Audio CODEC", centre_hz=None),
                 position=dict(position_source="gpsd", gpsd_host="localhost", gpsd_port=2948))
             store.save("home", custom)

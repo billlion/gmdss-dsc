@@ -18,7 +18,7 @@ class TxPanel:
             ui.label("Amateur transmission").classes("dsc-title")
             self.status = ui.label("Idle").classes("font-semibold")
             self.error = ui.label().classes("text-red-800 break-words").props('role="alert"')
-            ui.label("One CW + DSC burst. CAT PTT must be enabled in Radio connection before connecting.").classes("dsc-muted")
+            ui.label("One CW + DSC burst. PTT must be enabled in Radio connection before connecting.").classes("dsc-muted")
             self.fields["band_plan"] = ui.select({"": "TX disabled", "uk": "UK HF / 6 m allocations"},
                 value=initial.band_plan, label="TX allocation plan").classes("w-full")
             self.fields["callsign"] = ui.input("TX amateur callsign", value=initial.callsign).classes("w-full")
