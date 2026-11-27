@@ -1,4 +1,4 @@
-"""One-shot amateur experiments: allocation guard, CW + DSC and bounded CAT PTT.
+"""One-shot amateur experiments: allocation guard, CW + DSC and bounded Hamlib PTT.
 
 SPDX-License-Identifier: GPL-3.0-or-later
 """
@@ -248,5 +248,8 @@ def transmit_once(rig, message, *, cancel=None, progress=lambda text: None,
                 raise TxCancelled("Transmission cancelled or timed out")
         if cancel.is_set():
             raise TxCancelled("Transmission cancelled or timed out")
-    progress("Complete; PTT off confirmed")
-    return message.record | dict(transmitted=True, ptt_off_confirmed=True, rig=state)
+    serial_ptt = rig.settings.ptt_method in ("RTS", "DTR")
+    progress("Complete; Hamlib reports PTT line off" if serial_ptt else "Complete; PTT off confirmed")
+    return message.record | dict(transmitted=True, ptt_off_confirmed=True, rig=state,
+        ptt_method=rig.settings.ptt_method,
+        ptt_confirmation="serial_control_line" if serial_ptt else "cat_readback")

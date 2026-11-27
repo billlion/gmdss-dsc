@@ -90,8 +90,16 @@ class RigPanel:
                     field("remote_id", "Marine Remote ID (decimal; optional)")
                     field("civ_address", "CI-V address (e.g. 0x88; optional)")
                     field("executable", "rigctld executable or full path")
-                    self.fields["allow_ptt"] = ui.checkbox("Enable CAT PTT (IC-7100 / dummy)",
+                    self.fields["allow_ptt"] = ui.checkbox("Enable PTT (amateur TX)",
                                                           value=initial.rig.allow_ptt)
+                    self.fields["ptt_method"] = ui.select(
+                        {"RIG": "CAT command", "RTS": "Serial RTS (Digirig Mobile)", "DTR": "Serial DTR"},
+                        value=initial.rig.ptt_method, label="PTT method").classes("w-full")
+                    with ui.column().classes("w-full").bind_visibility_from(
+                            self.fields["ptt_method"], "value", backward=lambda v: v != "RIG"):
+                        field("ptt_device", "PTT serial port (blank = radio port)")
+                        ui.label("Use the Digirig COM port for RTS. Leave blank if CAT uses the same port. Hamlib owns both ports; serial PTT status does not confirm RF output.").classes("dsc-muted")
+                    ui.label("Original IC-706: select RTS/DTR. TX selects VFO A and commands SPLIT/DUP off; this model cannot read those states back.").classes("dsc-muted")
 
                     async def models():
                         try:
@@ -104,7 +112,7 @@ class RigPanel:
                         except Exception as exc:
                             error(exc)
                     ui.button("List radio models", on_click=models).props("flat no-caps")
-                    ui.label("IC-7100: 3070 · IC-M802: 30002 · Dummy: 1").classes("dsc-muted")
+                    ui.label("IC-706 original: 3009 · IC-7100: 3070 · IC-M802: 30002 · Dummy: 1").classes("dsc-muted")
 
                     async def ports():
                         from .position import serial_ports
@@ -124,7 +132,7 @@ class RigPanel:
                     field("host", "rigctld host")
                     field("port", "rigctld port", True)
                     ui.label("The existing daemon owns the radio model, serial port and address.").classes("dsc-muted")
-                    ui.label("This connection supports reception only. For TX, use Start a local rigctld with CAT PTT enabled.").classes("dsc-muted")
+                    ui.label("This connection supports reception only. For TX, use Start a local rigctld with PTT enabled.").classes("dsc-muted")
                     ui.label("Start it with -C cache_timeout=0 for fresh frequency readback.").classes("dsc-muted")
                 field("timeout_s", "Radio timeout (seconds)", True)
                 field("settle_s", "Settling time (seconds)", True)

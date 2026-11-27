@@ -1,7 +1,7 @@
 # Amateur CW + DSC transmission
 
-This first CAT transmitter supports the **IC-7100, Hamlib model 3070**, and
-Hamlib's dummy radio (model 1). It starts and owns a local `rigctld` so the
+The transmitter supports the **original IC-706, Hamlib model 3009**, the
+**IC-7100, model 3070**, and Hamlib's dummy radio (model 1). It starts and owns a local `rigctld` so the
 backend, PTT method and cache settings are known. Existing external daemons and
 other radio models remain available for RX. In particular, the marine Icom
 backends need separate verification of their TX frequency before enabling PTT.
@@ -26,12 +26,70 @@ The new automatic PTT sequence still needs his hardware test on an amateur frequ
    the radio there. The IC-7100 has RIT but no XIT; no receive offset is used
    to calculate the transmit frequency. Do not operate the tuning controls
    or another CAT client during a burst.
-5. Enable CAT PTT in the station's radio settings, then reconnect. Start with
+5. Enable PTT in the station's radio settings, with **CAT command** selected,
+   then reconnect. A separate serial RTS/DTR interface is also supported. Start with
    a low-power dummy-load test. Keep the radio's own timeout timer enabled.
 
 The modulation settings are described in the
 [Icom IC-7100 manual](https://icomuk.co.uk/files/icom/PDF/productManual/IC-7100_ENG_Paper_0.pdf),
 page 1-15. The application does not change those audio-routing menus.
+
+## Original IC-706 and Digirig Mobile
+
+Use Hamlib model **3009** for the original/Mk I IC-706, not the MkII or MkIIG
+entries. Its default CI-V address is **0x48**; the baud setting must match the
+radio. The original 706 has no CAT PTT command: select **Serial RTS (Digirig
+Mobile)** in **Radio connection**, then tick **Enable PTT (amateur TX)** before
+connecting. Select the Digirig playback device for TX audio, normally channel 1.
+
+The Digirig Mobile's hardware PTT switch uses **RTS**, not DTR. With the CI-V
+version and the IC-706 cable set, CAT and RTS can use the **same** USB serial
+port. Set **Radio serial port** to that port and leave **PTT serial port** blank.
+If CAT instead uses a separate USB CI-V adapter, put that adapter in **Radio
+serial port**, and the Digirig COM/device name in **PTT serial port**. Hamlib
+owns both; our Python code does not independently open either serial port.
+Serial DTR is available for interfaces wired that way, including with the
+IC-7100. Save the station profile to retain the selections.
+
+For example, these entries go in the station's existing rig table:
+
+```toml
+[profiles.home.rig]
+model = 3009
+device = "COM4"
+baud = 19200
+civ_address = 72  # 0x48
+allow_ptt = true
+ptt_method = "RTS"
+ptt_device = ""  # share COM4; use e.g. COM7 for a separate PTT interface
+```
+
+The corresponding daemon options are `-m 3009 -r COM4 -s 19200 -c 72 -P RTS
+-p COM4 -C cache_timeout=0,serial_handshake=None,ptt_share=0`. The application
+also supplies its own loopback address and TCP port. It sets no hardware
+handshaking and keeps the PTT port available between bursts. With PTT disabled,
+it uses `-P NONE` and holds the selected RTS/DTR line off when shared with CAT.
+USB serial drivers can briefly change line states while opening a port; include
+connect/disconnect as well as the burst itself in the initial dummy-load test.
+
+The original 706 cannot read split, duplex or VOX state back through this
+backend. Before TX, we send acknowledged **split off** and **simplex** commands,
+then verify USB and the dial frequency. Hamlib can suppress a repeated split-off
+command using its own state cache, so the preparation briefly selects VFO B
+then A using only split-off commands; it does not alter B's stored frequency.
+This is repeated after tuning. The radio is left in **VFO A / USB / simplex**.
+Do not change radio controls during the burst. Any VOX or external automatic
+keying must be disabled locally; serial PTT status cannot detect another source
+of keying.
+
+For RTS/DTR, `get_ptt` describes the serial-control state known to Hamlib, not
+the radio's actual transmit/RF state. The completion text and TX JSON distinguish
+this: `ptt_confirmation = "serial_control_line"`; `ptt_off_confirmed` refers to
+that interface. CAT PTT retains `ptt_confirmation = "cat_readback"`.
+
+References: [Digirig setup and RTS PTT](https://digirig.net/getting-started-with-digirig-mobile/),
+[IC-706 cable set](https://digirig.net/product/icom-ic-706-cords-for-digirig-mobile/),
+[Hamlib IC-706 backend](https://github.com/Hamlib/Hamlib/blob/master/rigs/icom/ic706.c).
 
 ## Saved settings and CLI
 
@@ -97,7 +155,7 @@ automatically repeated.
 
 ## Browser
 
-In **Radio connection**, enable **CAT PTT** before connecting the IC-7100.
+In **Radio connection**, choose the PTT method/port and enable **PTT** before connecting.
 In **Amateur transmission**, select the UK allocation plan and enter the
 callsign, output device, source, destination and **TX DSC centre**. Use
 **Save station** to retain the TX audio, callsign and allocation settings.
@@ -130,7 +188,7 @@ version:
    enter model **3070** and the serial port, baud and CI-V address that worked
    previously. The radio description is just a label; "Hamlib dummy" there
    does not identify the backend of an external daemon.
-4. Tick **Enable CAT PTT**, then **Connect radio**. If you were already
+4. Tick **Enable PTT**, then **Connect radio**. If you were already
    connected, disconnect before changing that setting.
 5. Select the UK TX plan, enter the callsign, radio output device, source and
    destination addresses, and an amateur TX centre frequency. Save the station
@@ -150,9 +208,11 @@ PTT; the form does not repeatedly open/probe sound hardware while idle.
 
 Before keying, the program validates addresses, requires a CW callsign and
 explicit output device/plan, opens and prepares the audio stream, selects
-VFO A, rejects active PTT, split, repeater shift or VOX, sets USB, and reads
-back the frequency/mode. The dummy additionally rejects nonzero XIT.
-Unsupported/failed readbacks block transmission.
+VFO A, rejects active PTT, sets USB, and reads back the frequency/mode.
+The IC-7100 rejects split, repeater shift or VOX through readbacks; the dummy
+additionally rejects nonzero XIT. The original IC-706 instead requires the
+acknowledged simplex setup described above. Failed required commands or
+readbacks block transmission.
 
 The entire conservative **3 kHz USB window above the suppressed carrier**
 must fit inside one allocation. This covers the CW tone and both FSK tones
@@ -176,6 +236,7 @@ broken serial link, a stopped server/OS or lost power: the radio timeout and
 local stop control provide independent protection.
 
 Tests include allocation edges/gaps, CW/DSC round trips, an actual Hamlib dummy
-PTT cycle, lost acknowledgements, failed release, audio failures, cancellation,
-timeouts, shared RX/TX exclusion and browser interactions. They do not replace
-the IC-7100 hardware test.
+PTT cycle, a real `rigctld` IC-706 backend with simulated CI-V and RTS/DTR lines
+(shared and separate ports, repeated bursts), lost acknowledgements, failed
+release, audio failures, cancellation, timeouts, shared RX/TX exclusion and
+browser interactions. They do not replace tests with a physical radio/Digirig.

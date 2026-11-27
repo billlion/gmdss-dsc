@@ -150,8 +150,11 @@ The default connection mode starts a local helper when **Connect radio** is
 pressed, bound to `127.0.0.1` on an automatically selected port. It keeps the
 serial connection open until **Disconnect radio** or server shutdown. It
 disables Hamlib PTT by default (`-P NONE`) and its readback cache (`-C cache_timeout=0`),
-so verification requests new backend readings. Explicitly enabling CAT PTT for
-the IC-7100 or dummy changes this to `-P RIG`; see [amateur TX](docs/tx.md).
+so frequency/mode verification requests new backend readings. Enabling PTT
+selects `-P RIG`, `-P RTS` or `-P DTR`. Serial PTT can share the CAT port or
+use a separately selected port. The original IC-706 (model 3009) uses serial
+PTT; select RTS for Digirig Mobile. The IC-7100 supports CAT or serial PTT.
+See [amateur TX and IC-706/Digirig setup](docs/tx.md).
 **Connect radio**
 only reads the current state. **Tune USB** applies the requested tuning.
 
@@ -590,7 +593,7 @@ assert TestCall.from_frame(received.decoded.frame) == call
 - `live.py`: optional soundcard capture, overlapping decode windows and deduplication.
 - `position.py`: position providers, freshness checks and Maidenhead conversion.
 - `transmit.py`: CW identification and optional soundcard playback.
-- `ham_tx.py`: amateur allocation checks, one-shot messages and CAT PTT watchdog.
+- `ham_tx.py`: amateur allocation checks, one-shot messages and Hamlib PTT watchdog.
 - `web_tx.py`: explicit shared browser TX and abort controls.
 - `cli.py`: WAV/live input and JSON results.
 

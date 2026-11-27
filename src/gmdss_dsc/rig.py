@@ -11,6 +11,9 @@ import tempfile
 from threading import RLock
 import time
 
+TX_MODELS = (1, 3009, 3070)  # dummy, original IC-706, IC-7100
+SERIAL_PTT = ("RTS", "DTR")
+
 
 class RigError(RuntimeError):
     """Connection, protocol, or radio operation failed."""
@@ -30,12 +33,30 @@ class RigSettings:
     timeout_s: float = 3.0
     settle_s: float = 0.3
     allow_ptt: bool = False
+    ptt_method: str = "RIG"
+    ptt_device: str = ""  # empty: use the CAT port (e.g. Digirig CI-V + RTS)
+
+    def tx_error(self):
+        """Explain TX eligibility without querying or opening any device."""
+        if self.connection != "managed":
+            return "Use Start a local rigctld for TX; existing daemons support reception only."
+        if self.model not in TX_MODELS:
+            return "TX supports IC-706 original (3009), IC-7100 (3070) or Hamlib dummy (1)."
+        if not self.allow_ptt:
+            return "PTT is disabled. Disconnect, tick Enable PTT in Radio connection, and reconnect."
+        if self.ptt_method not in ("RIG", *SERIAL_PTT):
+            return "PTT method must be RIG, RTS or DTR."
+        if self.model == 3009 and self.ptt_method == "RIG":
+            return "The original IC-706 needs serial RTS/DTR PTT; select RTS for Digirig Mobile."
+        if self.ptt_method in SERIAL_PTT and not (self.ptt_device.strip() or self.device.strip()):
+            return "Enter a PTT serial port, or a radio serial port to share for PTT."
+        return ""
 
     def validate(self):
         if type(self.allow_ptt) is not bool:
             raise ValueError("allow_ptt must be true or false")
-        if self.allow_ptt and (self.connection != "managed" or self.model not in (1, 3070)):
-            raise ValueError("CAT TX currently supports a managed IC-7100 (3070) or dummy (1) only")
+        if self.ptt_method not in ("RIG", *SERIAL_PTT):
+            raise ValueError("PTT method must be RIG, RTS or DTR")
         if self.connection not in ("managed", "external"):
             raise ValueError("Rig connection must be managed or external")
         for name, value, low, high in (
@@ -50,7 +71,7 @@ class RigSettings:
                 raise ValueError(f"{name} must be an integer from 1 to {high}")
         if self.remote_id is not None and self.civ_address is not None:
             raise ValueError("Choose a marine Remote ID or a CI-V address, not both")
-        for name in ("device", "executable", "host"):
+        for name in ("device", "ptt_device", "executable", "host"):
             value = getattr(self, name)
             if not isinstance(value, str) or any(ord(c) < 32 for c in value):
                 raise ValueError(f"Invalid rig {name}")
@@ -62,14 +83,26 @@ class RigSettings:
             raise ValueError("Rig timeout must be 0.1–30 seconds")
         if not (math.isfinite(self.settle_s) and 0 <= self.settle_s <= 10):
             raise ValueError("Rig settling time must be 0–10 seconds")
+        if self.allow_ptt and (reason := self.tx_error()):
+            raise ValueError(reason)
 
     def command(self, port):
         self.validate()
         command = [self.executable, "-m", str(self.model), "-T", "127.0.0.1",
-                   "-t", str(port), "-P", "RIG" if self.allow_ptt else "NONE"]
+                   "-t", str(port), "-P", self.ptt_method if self.allow_ptt else "NONE"]
         configuration = ["cache_timeout=0"]  # readback must query the backend
         if self.device:
             command += ["-r", self.device, "-s", str(self.baud)]
+        if self.ptt_method in SERIAL_PTT:
+            configuration.append("serial_handshake=None")
+            if self.allow_ptt:
+                command += ["-p", self.ptt_device or self.device]
+                # Retain the PTT port between bursts; no open/close each time.
+                configuration.append("ptt_share=0")
+            elif not self.ptt_device or os.path.normcase(self.ptt_device) == os.path.normcase(self.device):
+                # RX-only on a shared Digirig port must leave the keying line
+                # inactive too. Do not set a fixed state when Hamlib owns PTT.
+                configuration.append(f"{self.ptt_method.lower()}_state=OFF")
         if self.remote_id is not None:
             configuration.append(f"remoteid={self.remote_id}")
         command += ["-C", ",".join(configuration)]
@@ -259,13 +292,16 @@ class RigController:
             self._command("set_mode USB 0")
             self._command(f"set_freq {dial}")
             time.sleep(self.settings.settle_s)
-            status = self.read()
-            if status["mode"] != "USB" or abs(status["dial_hz"] - dial) > 2:
-                self._status = None
-                raise RigError(f"Radio readback does not match requested USB / {dial} Hz: {status}")
-            status.update(frequency_hz=status["dial_hz"] + centre_hz, centre_hz=centre_hz)
-            self._status = status
-            return dict(status)
+            return self._read_tuned(dial, centre_hz)
+
+    def _read_tuned(self, dial, centre_hz):
+        status = self.read()
+        if status["mode"] != "USB" or abs(status["dial_hz"] - dial) > 2:
+            self._status = None
+            raise RigError(f"Radio readback does not match requested USB / {dial} Hz: {status}")
+        status.update(frequency_hz=status["dial_hz"] + centre_hz, centre_hz=centre_hz)
+        self._status = status
+        return dict(status)
 
     def close(self):
         with self._lock:
@@ -295,32 +331,51 @@ class RigController:
         self._pending = b""
 
     def require_tx(self):
-        if (not self.connected or self.settings is None or not self.settings.allow_ptt
-                or self.settings.connection != "managed" or self.settings.model not in (1, 3070)):
-            raise RigError("Connect a managed IC-7100 or dummy with CAT PTT enabled first")
+        if not self.connected or self.settings is None:
+            raise RigError("Connect a supported local radio with PTT enabled first")
+        if reason := self.settings.tx_error():
+            raise RigError(reason)
         if self.ptt_uncertain:
             raise RigError("PTT state is uncertain: stop the transmitter locally before continuing")
 
     def check_idle(self):
         with self._lock:
             if self._command("get_ptt").get("PTT") != "0":
-                raise RigError("Radio is already transmitting or PTT state is unreadable")
+                raise RigError("PTT is already active or its state is unreadable")
 
     def prepare_tx(self, frequency_hz, centre_hz):
-        """IC-7100 simplex VFO A only; do not infer TX from a marine RX VFO.
+        """Model-specific simplex VFO A setup before any key-on command.
 
-        The IC-7100 has RIT but no XIT. Explicit VFO selection avoids memory
-        channel TX offsets. Split and DUP must both read back as off.
+        The original IC-706 has write-only split/duplex commands: require their
+        ACKs instead of asking Hamlib for unsupported/cached readbacks. The
+        IC-7100 retains its stricter split/DUP/VOX readback checks.
         """
         self.require_tx()
         with self._lock:
             self.check_idle()
             self._command("set_vfo VFOA")
+            if self.settings.model == 3009:
+                self._set_706_simplex()
+                self.tune(frequency_hz, centre_hz)
+                self._set_706_simplex()  # clear any offset activated by tuning
+                state = self._read_tuned(usb_dial(frequency_hz, centre_hz), centre_hz)
+                state["simplex_check"] = "commands_acknowledged"
+                self.check_idle()
+                return state
             self._check_simplex()
             state = self.tune(frequency_hz, centre_hz)
             self._check_simplex()  # tuning must not have enabled an automatic offset
             self.check_idle()
             return state
+
+    def _set_706_simplex(self):
+        # Hamlib suppresses repeated set_split_vfo even with cache_timeout=0.
+        # Visiting B then A with split OFF forces an actual final A/off command
+        # on every burst, without ever enabling split or changing B's frequency.
+        # IC-706 CI-V 0F 00 and 0F 10; failures are not optional.
+        self._command("set_split_vfo 0 VFOB")
+        self._command("set_split_vfo 0 VFOA")
+        self._command("set_rptr_shift None")
 
     def _check_simplex(self):
         if self._command("get_split_vfo").get("Split") != "0":
@@ -331,14 +386,14 @@ class RigController:
         if self.settings.model == 1 and self._command("get_xit").get("XIT") != "0":
             raise RigError("Turn XIT off before transmitting")
         if self._command("get_func VOX").get("Func Status") != "0":
-            raise RigError("Turn VOX off before using CAT PTT")
+            raise RigError("Turn VOX off before using PTT")
 
     def key_ptt(self):
         with self._lock:
             self.ptt_uncertain = True  # BEFORE sending: the acknowledgement may be lost
             self._command("set_ptt 1")
             if self._command("get_ptt").get("PTT") != "1":
-                raise RigError("Radio did not confirm PTT on")
+                raise RigError("Hamlib did not confirm PTT on")
 
     def release_ptt(self):
         """Independent transport, usable after a failed command or audio stall.

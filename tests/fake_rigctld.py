@@ -54,8 +54,12 @@ class Handler(socketserver.StreamRequestHandler):
                 pass
             elif verb == "get_split_vfo":
                 body = f"Split: {self.server.split}\nTX VFO: VFOA\n"
+            elif verb == "set_split_vfo":
+                self.server.split = int(args[0])
             elif verb == "get_rptr_shift":
                 body = f"Rptr Shift: {self.server.shift}\n"
+            elif verb == "set_rptr_shift":
+                self.server.shift = args[0]
             elif verb == "get_xit":
                 body = f"XIT: {self.server.xit}\n"
             elif verb == "get_func":
